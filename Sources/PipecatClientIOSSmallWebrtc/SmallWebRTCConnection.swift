@@ -183,7 +183,7 @@ final class SmallWebRTCConnection: NSObject {
 
     func sendMessage( message: Encodable) throws{
         let jsonData = try JSONEncoder().encode(message);
-        Logger.shared.debug("Sending message: \(String(data: jsonData, encoding: .utf8))")
+        Logger.shared.debug("Sending message: \(String(data: jsonData, encoding: .utf8) ?? "")")
         let buffer = RTCDataBuffer(data: jsonData, isBinary: true)
         self.signallingDataChannel?.sendData(buffer)
     }
