@@ -44,7 +44,7 @@ public func setLogLevel(_ logLevel: LogLevel) {
 internal final class Logger {
     fileprivate var level: LogLevel = .warn
     
-    fileprivate let osLog: OSLog = .init(subsystem: "co.daily.pipecat.OpenAIRealtime", category: "main")
+    fileprivate let osLog: OSLog = .init(subsystem: "co.daily.pipecat.SmallWebRTC", category: "main")
     
     internal static let shared: Logger = .init()
     
