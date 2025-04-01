@@ -5,6 +5,8 @@ import WebRTC
 
 /// An RTVI transport to connect with the SmallWebRTCTransport  backend.
 public class SmallWebRTCTransport: Transport {
+    
+    public static let SERVICE_NAME = "small-webrtc-transport";
 
     private var iceServers: [String] = []
     private let options: RTVIClientOptions
@@ -76,10 +78,14 @@ public class SmallWebRTCTransport: Transport {
         request.httpMethod = "POST"
 
         // headers
-        request.setValue("application/sdp", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         do {
-            request.httpBody = sdp.sdp.data(using: .utf8)
+            /*var customBundle:Value = Value.object([
+                "sdp": Value.string(sdp.sdp),
+                "type": Value.number(Double(sdp.type.rawValue))
+            ])*/
+            request.httpBody = try JSONEncoder().encode( SessionDescription(from:sdp))
 
             Logger.shared.debug("Will send offer")
 
@@ -90,18 +96,12 @@ public class SmallWebRTCTransport: Transport {
                 let message = "Failed while authenticating: \(errorMessage)"
                 throw HttpError(message: message)
             }
-
-            guard let sdpString = String(data: data, encoding: .utf8) else {
-                let message = "Failed to retrieve SDP answer."
-                throw HttpError(message: message)
-            }
-
-            //let answer = try JSONDecoder().decode(SessionDescription.self, from: data)
-            let answer = RTCSessionDescription(type: .answer, sdp: sdpString)
+            
+            let answer = try JSONDecoder().decode(SessionDescription.self, from: data)
 
             Logger.shared.debug("Received answer")
 
-            return answer
+            return answer.rtcSessionDescription
         } catch {
             throw HttpError(message: "Failed while trying to receive answer.", underlyingError: error)
         }
@@ -121,13 +121,11 @@ public class SmallWebRTCTransport: Transport {
         do {
             let offer = try await webrtcClient.offer()
 
-            guard let baseUrl = self.options.params.baseUrl else {
+            guard let connectUrl = self.options.params.config.serverUrl else {
                 Logger.shared.error("Missing Base URL")
                 return
             }
-
-            let connectUrl = "\(baseUrl)\(self.options.params.endpoints.connect)"
-
+            
             let answer = try await self.sendOffer(connectUrl: connectUrl, sdp: offer)
             webrtcClient.set(remoteSdp: answer, completion: { error in
                 if let error = error {
@@ -317,9 +315,9 @@ extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
             if typeValue?.asString == "rtvi-ai" {
                 Logger.shared.debug("Received RTVI message: \(msg)")
                 self.onMessage?(.init(
-                    type: dict["type"]!!.asString,
-                    data: dict["data"]!!.asString,
-                    id: dict["id"]!!.asString
+                    type: dict["type"]??.asString,
+                    data: dict["data"]??.asString,
+                    id: dict["id"]??.asString
                 ))
             }
         }
