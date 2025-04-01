@@ -7,7 +7,7 @@ import WebRTC
 public class SmallWebRTCTransport: Transport {
     
     public static let SERVICE_NAME = "small-webrtc-transport";
-
+    
     private var iceServers: [String] = []
     private let options: RTVIClientOptions
     private var _state: TransportState = .disconnected
@@ -20,19 +20,19 @@ public class SmallWebRTCTransport: Transport {
     )
     private var devicesInitialized: Bool = false
     private var _selectedMic: MediaDeviceInfo?
-
+    
     // MARK: - Public
-
+    
     /// Voice client delegate (used directly by user's code)
     public weak var delegate: PipecatClientIOS.RTVIClientDelegate?
-
+    
     /// RTVI inbound message handler (for sending RTVI-style messages to voice client code to handle)
     public var onMessage: ((PipecatClientIOS.RTVIMessageInbound) -> Void)?
-
+    
     public required convenience init(options: PipecatClientIOS.RTVIClientOptions) {
         self.init(options: options, iceServers: nil)
     }
-
+    
     public init(options: PipecatClientIOS.RTVIClientOptions, iceServers: [String]?) {
         self.options = options
         self.audioManager.delegate = self
@@ -40,57 +40,57 @@ public class SmallWebRTCTransport: Transport {
             self.iceServers = iceServers!
         }
     }
-
+    
     public func initDevices() async throws {
         if (self.devicesInitialized) {
             // There is nothing to do in this case
             return
         }
-
+        
         self.setState(state: .initializing)
-
+        
         // start managing audio device configuration
         self.audioManager.startManagingIfNecessary()
-
+        
         // initialize devices state and report initial available & selected devices
         self._selectedMic = self.getSelectedMic()
         self.delegate?.onAvailableMicsUpdated(mics: self.getAllMics());
         self.delegate?.onMicUpdated(mic: self._selectedMic)
-
+        
         self.setState(state: .initialized)
         self.devicesInitialized = true
     }
-
+    
     public func release() {
         // stop managing audio device configuration
         self.audioManager.stopManaging()
         self._selectedMic = nil
     }
-
+    
     private func sendOffer(connectUrl: String, sdp: RTCSessionDescription) async throws -> RTCSessionDescription {
         guard let url = URL(string: connectUrl) else {
             throw InvalidAuthBundleError()
         }
-
+        
         Logger.shared.debug("connectUrl, \(connectUrl)")
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-
+        
         // headers
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
+        
         do {
             /*var customBundle:Value = Value.object([
-                "sdp": Value.string(sdp.sdp),
-                "type": Value.number(Double(sdp.type.rawValue))
-            ])*/
+             "sdp": Value.string(sdp.sdp),
+             "type": Value.number(Double(sdp.type.rawValue))
+             ])*/
             request.httpBody = try JSONEncoder().encode( SessionDescription(from:sdp))
-
+            
             Logger.shared.debug("Will send offer")
-
+            
             let (data, response) = try await URLSession.shared.data(for: request)
-
+            
             guard let httpResponse = response as? HTTPURLResponse, ( httpResponse.statusCode >= 200 && httpResponse.statusCode <= 299 ) else {
                 let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
                 let message = "Failed while authenticating: \(errorMessage)"
@@ -98,29 +98,29 @@ public class SmallWebRTCTransport: Transport {
             }
             
             let answer = try JSONDecoder().decode(SessionDescription.self, from: data)
-
+            
             Logger.shared.debug("Received answer")
-
+            
             return answer.rtcSessionDescription
         } catch {
             throw HttpError(message: "Failed while trying to receive answer.", underlyingError: error)
         }
     }
-
+    
     public func connect(authBundle: PipecatClientIOS.AuthBundle?) async throws {
         self.setState(state: .connecting)
-
+        
         self.smallWebRTCConnection = SmallWebRTCConnection(iceServers: self.iceServers)
-
+        
         guard let webrtcClient = self.smallWebRTCConnection else {
             return
         }
         webrtcClient.delegate = self
-
+        
         // start connecting
         do {
             let offer = try await webrtcClient.offer()
-
+            
             guard let connectUrl = self.options.params.config.serverUrl else {
                 Logger.shared.error("Missing Base URL")
                 return
@@ -138,54 +138,54 @@ public class SmallWebRTCTransport: Transport {
             self.setState(state: .error)
             throw error
         }
-
+        
         // go to connected state
         // (unless we've already leaped ahead to the ready state - see connectionDidFinishModelSetup())
         if _state == .connecting {
             self.setState(state: .connected)
         }
     }
-
+    
     public func disconnect() async throws {
         // stop websocket connection
         self.smallWebRTCConnection?.disconnect()
         self.smallWebRTCConnection = nil
-
+        
         self.delegate?.onTracksUpdated(tracks: self.tracks()!)
-
+        
         self.setState(state: .disconnected)
     }
-
+    
     public func getAllMics() -> [PipecatClientIOS.MediaDeviceInfo] {
         audioManager.availableDevices.map { $0.toRtvi() }
     }
-
+    
     public func getAllCams() -> [PipecatClientIOS.MediaDeviceInfo] {
-        // TODO: implement it
+        logOperationNotSupported(#function)
         return []
     }
-
+    
     public func updateMic(micId: PipecatClientIOS.MediaDeviceId) async throws {
         audioManager.preferredAudioDevice = .init(deviceID: micId.id)
-
+        
         // Refresh what we should report as the selected mic
         refreshSelectedMicIfNeeded()
     }
-
+    
     public func updateCam(camId: PipecatClientIOS.MediaDeviceId) async throws {
-        // TODO: implement it
+        logOperationNotSupported(#function)
     }
-
+    
     /// What we report as the selected mic.
     public func selectedMic() -> PipecatClientIOS.MediaDeviceInfo? {
         _selectedMic
     }
-
+    
     public func selectedCam() -> PipecatClientIOS.MediaDeviceInfo? {
-        // TODO: implement it
+        logOperationNotSupported(#function)
         return nil
     }
-
+    
     public func enableMic(enable: Bool) async throws {
         if enable {
             self.smallWebRTCConnection?.unmuteAudio()
@@ -193,20 +193,20 @@ public class SmallWebRTCTransport: Transport {
             self.smallWebRTCConnection?.muteAudio()
         }
     }
-
+    
     public func enableCam(enable: Bool) async throws {
-        // TODO: implement it
+        logOperationNotSupported(#function)
     }
-
+    
     public func isCamEnabled() -> Bool {
-        // TODO: implement it
+        logOperationNotSupported(#function)
         return false
     }
-
+    
     public func isMicEnabled() -> Bool {
         return self.smallWebRTCConnection?.isAudioEnabled() ?? true
     }
-
+    
     public func sendMessage(message: PipecatClientIOS.RTVIMessageOutbound) throws {
         do {
             try self.smallWebRTCConnection?.sendMessage(message: message)
@@ -214,20 +214,20 @@ public class SmallWebRTCTransport: Transport {
             Logger.shared.error("Error sending message: \(error.localizedDescription)")
         }
     }
-
+    
     public func state() -> PipecatClientIOS.TransportState {
         self._state
     }
-
+    
     public func setState(state: PipecatClientIOS.TransportState) {
         let previousState = self._state
-
+        
         self._state = state
-
+        
         // Fire delegate methods as needed
         if state != previousState {
             self.delegate?.onTransportStateChanged(state: self._state)
-
+            
             if state == .connected {
                 self.delegate?.onConnected()
                 // New bot participant id each time we connect
@@ -246,11 +246,11 @@ public class SmallWebRTCTransport: Transport {
             }
         }
     }
-
+    
     public func isConnected() -> Bool {
         return [.connected, .ready].contains(self._state)
     }
-
+    
     public func tracks() -> PipecatClientIOS.Tracks? {
         return .init(
             local: .init(
@@ -263,17 +263,21 @@ public class SmallWebRTCTransport: Transport {
             )
         )
     }
-
+    
     public func expiry() -> Int? {
         return nil
     }
-
+    
     public func setIceServers(iceServers: [String]) {
         self.iceServers = iceServers
     }
-
+    
     // MARK: - Private
-
+    
+    private func logOperationNotSupported(_ operationName: String) {
+        Logger.shared.warn("\(operationName) not supported")
+    }
+    
     /// Refresh what we should report as the selected mic.
     private func refreshSelectedMicIfNeeded() {
         let newSelectedMic = getSelectedMic()
@@ -282,7 +286,7 @@ public class SmallWebRTCTransport: Transport {
             delegate?.onMicUpdated(mic: _selectedMic)
         }
     }
-
+    
     /// Selected mic is a value derived from the preferredAudioDevice and the set of available devices, so it may change whenever either of those change.
     private func getSelectedMic() -> PipecatClientIOS.MediaDeviceInfo? {
         audioManager.availableDevices.first { $0.deviceID == audioManager.preferredAudioDeviceIfAvailable?.deviceID }?.toRtvi()
@@ -292,7 +296,7 @@ public class SmallWebRTCTransport: Transport {
 // MARK: - SmallWebRTCConnectionDelegate
 
 extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
-
+    
     func onConnectionStateChanged(state: RTCIceConnectionState) {
         if ( state == .failed || state == .closed ) && ( self._state != .disconnected && self._state != .disconnecting ){
             Task {
@@ -300,15 +304,15 @@ extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
             }
         }
     }
-
+    
     func onMsgReceived(msg: PipecatClientIOS.Value) {
         self.handleMessage(msg)
     }
-
+    
     func onTracksUpdated() {
         self.delegate?.onTracksUpdated(tracks: self.tracks()!)
     }
-
+    
     private func handleMessage(_ msg: Value) {
         let dict = msg.asObject
         if let typeValue = dict["label"] {
@@ -332,11 +336,11 @@ extension SmallWebRTCTransport: AudioManagerDelegate {
     func audioManagerDidChangeAvailableDevices(_ audioManager: AudioManager) {
         // Report available mics changed
         delegate?.onAvailableMicsUpdated(mics: getAllMics())
-
+        
         // Refresh what we should report as the selected mic
         refreshSelectedMicIfNeeded()
     }
-
+    
     func audioManagerDidChangeAudioDevice(_ audioManager: AudioManager) {
         // nothing to do here
     }
