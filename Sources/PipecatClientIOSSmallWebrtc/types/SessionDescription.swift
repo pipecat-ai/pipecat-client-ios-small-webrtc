@@ -17,7 +17,7 @@ enum SdpType: String, Codable {
 
 /// This struct is a swift wrapper over `RTCSessionDescription` for easy encode and decode
 struct SessionDescription: Codable {
-    let sdp: String
+    var sdp: String
     let type: SdpType
     
     init(from rtcSessionDescription: RTCSessionDescription) {

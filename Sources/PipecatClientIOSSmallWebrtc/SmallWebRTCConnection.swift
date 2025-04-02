@@ -86,7 +86,10 @@ final class SmallWebRTCConnection: NSObject {
                 
                 // Now ICE gathering will start, we need to wait for it to complete
                 self.waitForIceGathering(completion: {
-                    completion(self.peerConnection.localDescription!)
+                    // Manipulating so we can choose the codec
+                    var offer = SessionDescription.init(from: self.peerConnection.localDescription!)
+                    offer.sdp = self.filterCodec(kind: "video", codec: "VP8/90000", in: offer.sdp)
+                    completion(offer.rtcSessionDescription)
                 })
             }
         }
@@ -182,6 +185,8 @@ final class SmallWebRTCConnection: NSObject {
             return
         }
         
+        Logger.shared.info("FRAME RATE \(fps.maxFrameRate)")
+        
         capturer.startCapture(with: frontCamera,
                               format: format,
                               fps: Int(fps.maxFrameRate))
@@ -220,14 +225,14 @@ final class SmallWebRTCConnection: NSObject {
     private func createAudioTrack() -> RTCAudioTrack {
         let audioConstrains = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let audioSource = SmallWebRTCConnection.factory.audioSource(with: audioConstrains)
-        let audioTrack = SmallWebRTCConnection.factory.audioTrack(with: audioSource, trackId: "audio0")
+        let audioTrack = SmallWebRTCConnection.factory.audioTrack(with: audioSource, trackId: UUID().uuidString)
         return audioTrack
     }
     
     private func createVideoTrack() -> RTCVideoTrack {
         let videoSource = SmallWebRTCConnection.factory.videoSource()
         self.videoCapturer = RTCCameraVideoCapturer(delegate: videoSource)
-        let videoTrack = SmallWebRTCConnection.factory.videoTrack(with: videoSource, trackId: "video0")
+        let videoTrack = SmallWebRTCConnection.factory.videoTrack(with: videoSource, trackId: UUID().uuidString)
         return videoTrack
     }
     
@@ -367,6 +372,79 @@ extension SmallWebRTCConnection: RTCDataChannelDelegate {
         } catch {
             Logger.shared.error("Error decoding JSON into Value: \(error.localizedDescription)")
         }
+    }
+    
+}
+
+// handle codecs manipulation
+extension SmallWebRTCConnection {
+    
+    func filterCodec(kind: String, codec: String, in sdp: String) -> String {
+        var allowedPayloadTypes: [String] = []
+        let lines = sdp.components(separatedBy: "\n")
+        var isMediaSection = false
+        var modifiedLines: [String] = []
+
+        let codecPattern = "a=rtpmap:(\\d+) \(NSRegularExpression.escapedPattern(for: codec))"
+        let rtxPattern = "a=fmtp:(\\d+) apt=(\\d+)"
+        let mediaPattern = "m=\(kind) \\d+ [A-Z/]+(?: (\\d+))*"
+
+        guard let codecRegex = try? NSRegularExpression(pattern: codecPattern),
+              let rtxRegex = try? NSRegularExpression(pattern: rtxPattern),
+              let mediaRegex = try? NSRegularExpression(pattern: mediaPattern) else {
+            return sdp
+        }
+
+        for line in lines {
+            if line.starts(with: "m=\(kind) ") {
+                isMediaSection = true
+            } else if line.starts(with: "m=") {
+                isMediaSection = false
+            }
+
+            if isMediaSection {
+                if let match = codecRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                   let payloadRange = Range(match.range(at: 1), in: line) {
+                    allowedPayloadTypes.append(String(line[payloadRange]))
+                }
+
+                if let match = rtxRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                   let payloadTypeRange = Range(match.range(at: 1), in: line),
+                   let aptRange = Range(match.range(at: 2), in: line),
+                   allowedPayloadTypes.contains(String(line[aptRange])) {
+                    allowedPayloadTypes.append(String(line[payloadTypeRange]))
+                }
+            }
+        }
+
+        isMediaSection = false
+        for line in lines {
+            if line.starts(with: "m=\(kind) ") {
+                isMediaSection = true
+                if let match = mediaRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                   let mediaLineRange = Range(match.range(at: 0), in: line) {
+                    let mediaLine = String(line[mediaLineRange])
+                    let newMediaLine = mediaLine + " " + allowedPayloadTypes.joined(separator: " ")
+                    modifiedLines.append(newMediaLine)
+                    continue
+                }
+            } else if line.starts(with: "m=") {
+                isMediaSection = false
+            }
+
+            if isMediaSection {
+                let skipPatterns = ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
+                if skipPatterns.contains(where: { line.starts(with: $0) }),
+                   let payloadType = line.split(separator: ":").last?.split(separator: " ").first,
+                   !allowedPayloadTypes.contains(String(payloadType)) {
+                    continue
+                }
+            }
+
+            modifiedLines.append(line)
+        }
+
+        return modifiedLines.joined(separator: "\n")
     }
     
 }
