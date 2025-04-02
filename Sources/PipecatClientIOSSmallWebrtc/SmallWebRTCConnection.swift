@@ -345,6 +345,10 @@ extension SmallWebRTCConnection {
         self.setVideoEnabled(true)
     }
     
+    func isVideoEnabled() -> Bool {
+        return self.localVideoTrack?.isEnabled ?? false
+    }
+    
     private func setVideoEnabled(_ isEnabled: Bool) {
         setTrackEnabled(RTCVideoTrack.self, isEnabled: isEnabled)
     }

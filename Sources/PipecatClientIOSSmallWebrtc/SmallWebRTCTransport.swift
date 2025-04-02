@@ -199,12 +199,15 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func enableCam(enable: Bool) async throws {
-        logOperationNotSupported(#function)
+        if enable {
+            self.smallWebRTCConnection?.showVideo()
+        } else {
+            self.smallWebRTCConnection?.hideVideo()
+        }
     }
     
     public func isCamEnabled() -> Bool {
-        logOperationNotSupported(#function)
-        return false
+        return self.smallWebRTCConnection?.isVideoEnabled() ?? false
     }
     
     public func isMicEnabled() -> Bool {
