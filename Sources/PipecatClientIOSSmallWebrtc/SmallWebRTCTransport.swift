@@ -65,6 +65,7 @@ public class SmallWebRTCTransport: Transport {
         // stop managing audio device configuration
         self.audioManager.stopManaging()
         self._selectedMic = nil
+        VideoTrackRegistry.clearRegistry()
     }
     
     private func sendOffer(connectUrl: String, sdp: RTCSessionDescription) async throws -> RTCSessionDescription {
@@ -255,14 +256,29 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func tracks() -> PipecatClientIOS.Tracks? {
-        return .init(
-            local: .init(
+        // removing any track since we are going to store it again
+        VideoTrackRegistry.clearRegistry()
+        
+        let localVideoTrack = self.smallWebRTCConnection?.getLocalVideoTrack()
+        // Registering the track so we can retrieve it later inside the VoiceClientVideoView
+        if let localVideoTrack = localVideoTrack {
+            VideoTrackRegistry.registerTrack(originalTrack: localVideoTrack, mediaTrackId: localVideoTrack.toRtvi())
+        }
+        
+        let botVideoTrack = self.smallWebRTCConnection?.getRemoteVideoTrack()
+        // Registering the track so we can retrieve it later inside the VoiceClientVideoView
+        if let botVideoTrack = botVideoTrack {
+            VideoTrackRegistry.registerTrack(originalTrack: botVideoTrack, mediaTrackId: botVideoTrack.toRtvi())
+        }
+        
+        return Tracks(
+            local: ParticipantTracks(
                 audio: self.smallWebRTCConnection?.getLocalAudioTrack()?.toRtvi(),
-                video: nil
+                video: localVideoTrack?.toRtvi()
             ),
-            bot: .init(
+            bot: ParticipantTracks(
                 audio: self.smallWebRTCConnection?.getRemoteAudioTrack()?.toRtvi(),
-                video: nil
+                video: botVideoTrack?.toRtvi()
             )
         )
     }
