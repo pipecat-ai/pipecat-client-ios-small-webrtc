@@ -9,76 +9,81 @@ protocol SmallWebRTCConnectionDelegate: AnyObject {
 }
 
 final class SmallWebRTCConnection: NSObject {
-
+    
     private static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         let videoEncoderFactory = RTCDefaultVideoEncoderFactory()
         let videoDecoderFactory = RTCDefaultVideoDecoderFactory()
         return RTCPeerConnectionFactory(encoderFactory: videoEncoderFactory, decoderFactory: videoDecoderFactory)
     }()
-
+    
     weak var delegate: SmallWebRTCConnectionDelegate?
-
+    
     private let peerConnection: RTCPeerConnection
-    private let mediaConstraints = [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue]
-
+    private let mediaConstraints = [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue,
+                                    kRTCMediaConstraintsOfferToReceiveVideo: kRTCMediaConstraintsValueTrue]
+    
     private var signallingDataChannel: RTCDataChannel?
-
+    
     private var localAudioTrack: RTCAudioTrack?
     private var remoteAudioTrack: RTCAudioTrack?
-
+    
+    private var videoCapturer: RTCVideoCapturer?
+    private var localVideoTrack: RTCVideoTrack?
+    private var remoteVideoTrack: RTCVideoTrack?
+    
     private var iceGatheringCompleted = false
-
+    
     @available(*, unavailable)
     override init() {
-        fatalError("WebRTCClient:init is unavailable")
+        fatalError("SmallWebRTCConnection:init is unavailable")
     }
-
+    
     required init(iceServers: [String]) {
         let config = RTCConfiguration()
         if !iceServers.isEmpty {
             config.iceServers = [RTCIceServer(urlStrings: iceServers)]
         }
-
+        
         // Unified plan is more superior than planB
         config.sdpSemantics = .unifiedPlan
-
+        
         // gatherContinually will let WebRTC to listen to any network changes and send any new candidates to the other client
         config.continualGatheringPolicy = .gatherOnce
-
+        
         // Define media constraints. DtlsSrtpKeyAgreement is required to be true to be able to connect with web browsers.
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil,
                                               optionalConstraints: ["DtlsSrtpKeyAgreement":kRTCMediaConstraintsValueTrue])
-
+        
         guard let peerConnection = SmallWebRTCConnection.factory.peerConnection(with: config, constraints: constraints, delegate: nil) else {
             fatalError("Could not create new RTCPeerConnection")
         }
-
+        
         self.peerConnection = peerConnection
-
+        
         super.init()
         self.createMediaSenders()
         self.peerConnection.delegate = self
     }
-
+    
     // MARK: Signaling
     func offer(completion: @escaping (_ sdp: RTCSessionDescription) -> Void) {
         // 1. Create the offer
         let constrains = RTCMediaConstraints(mandatoryConstraints: self.mediaConstraints, optionalConstraints: nil)
-
+        
         self.peerConnection.offer(for: constrains) { (sdp, error) in
             guard let sdp = sdp else {
                 Logger.shared.debug("Error creating offer: \(String(describing: error))")
                 return
             }
-
+            
             // 2. Set the local description to trigger ICE gathering
             self.peerConnection.setLocalDescription(sdp) { (error) in
                 if let error = error {
                     Logger.shared.debug("Error setting local description: \(error)")
                     return
                 }
-
+                
                 // Now ICE gathering will start, we need to wait for it to complete
                 self.waitForIceGathering(completion: {
                     completion(self.peerConnection.localDescription!)
@@ -86,7 +91,7 @@ final class SmallWebRTCConnection: NSObject {
             }
         }
     }
-
+    
     private func waitForIceGathering(completion: @escaping () -> Void) {
         // Wait until ICE gathering is complete
         DispatchQueue.global().async {
@@ -94,14 +99,14 @@ final class SmallWebRTCConnection: NSObject {
                 // Sleep to avoid blocking the main thread
                 Thread.sleep(forTimeInterval: 0.1)
             }
-
+            
             // Once gathering is complete, proceed with the callback
             DispatchQueue.main.async {
                 completion()
             }
         }
     }
-
+    
     func offer() async throws -> RTCSessionDescription {
         return try await withCheckedThrowingContinuation { continuation in
             self.offer { sdp in
@@ -109,7 +114,7 @@ final class SmallWebRTCConnection: NSObject {
             }
         }
     }
-
+    
     func answer(completion: @escaping (_ sdp: RTCSessionDescription) -> Void)  {
         let constrains = RTCMediaConstraints(mandatoryConstraints: self.mediaConstraints,
                                              optionalConstraints: nil)
@@ -117,13 +122,13 @@ final class SmallWebRTCConnection: NSObject {
             guard let sdp = sdp else {
                 return
             }
-
+            
             self.peerConnection.setLocalDescription(sdp, completionHandler: { (error) in
                 completion(sdp)
             })
         }
     }
-
+    
     func answer() async throws -> RTCSessionDescription {
         return try await withCheckedThrowingContinuation { continuation in
             self.answer { sdp in
@@ -131,46 +136,101 @@ final class SmallWebRTCConnection: NSObject {
             }
         }
     }
-
+    
     func set(remoteSdp: RTCSessionDescription, completion: @escaping (Error?) -> ()) {
         self.peerConnection.setRemoteDescription(remoteSdp, completionHandler: completion)
     }
-
+    
     func set(remoteCandidate: RTCIceCandidate, completion: @escaping (Error?) -> ()) {
         self.peerConnection.add(remoteCandidate, completionHandler: completion)
     }
-
+    
     func getLocalAudioTrack() -> RTCAudioTrack? {
         return self.localAudioTrack
     }
-
+    
     func getRemoteAudioTrack() -> RTCAudioTrack? {
         return self.remoteAudioTrack
     }
-
+    
+    func getLocalVideoTrack() -> RTCVideoTrack? {
+        return self.localVideoTrack
+    }
+    
+    func getRemoteVideoTrack() -> RTCVideoTrack? {
+        return self.remoteVideoTrack
+    }
+    
     // MARK: Media
+    func startCaptureLocalVideo(renderer: RTCVideoRenderer? = nil) {
+        guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
+            return
+        }
+        
+        guard
+            let frontCamera = (RTCCameraVideoCapturer.captureDevices().first { $0.position == .front }),
+            
+                // choose highest res
+            let format = (RTCCameraVideoCapturer.supportedFormats(for: frontCamera).sorted { (f1, f2) -> Bool in
+                let width1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
+                let width2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
+                return width1 < width2
+            }).last,
+            
+                // choose highest fps
+            let fps = (format.videoSupportedFrameRateRanges.sorted { return $0.maxFrameRate < $1.maxFrameRate }.last) else {
+            return
+        }
+        
+        capturer.startCapture(with: frontCamera,
+                              format: format,
+                              fps: Int(fps.maxFrameRate))
+        
+        if (renderer != nil) {
+            self.localVideoTrack?.add(renderer!)
+        }
+    }
+    
+    func renderRemoteVideo(to renderer: RTCVideoRenderer) {
+        self.remoteVideoTrack?.add(renderer)
+    }
+    
     private func createMediaSenders() {
         let streamId = "stream"
-
+        
         // Audio
         let audioTrack = self.createAudioTrack()
         self.localAudioTrack = audioTrack
         self.peerConnection.add(audioTrack, streamIds: [streamId])
-
+        
+        // Video
+        let videoTrack = self.createVideoTrack()
+        self.localVideoTrack = videoTrack
+        self.peerConnection.add(videoTrack, streamIds: [streamId])
+        // TODO: check if we need to do something different, like we do for audioTrack
+        self.remoteVideoTrack = self.peerConnection.transceivers.first { $0.mediaType == .video }?.receiver.track as? RTCVideoTrack
+        
         // Data
-        if let dataChannel = self.createDataChannel(label: "oai-events") {
+        if let dataChannel = self.createDataChannel(label: "rtvi-events") {
             dataChannel.delegate = self
             self.signallingDataChannel = dataChannel
         }
     }
-
+    
     private func createAudioTrack() -> RTCAudioTrack {
         let audioConstrains = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let audioSource = SmallWebRTCConnection.factory.audioSource(with: audioConstrains)
         let audioTrack = SmallWebRTCConnection.factory.audioTrack(with: audioSource, trackId: "audio0")
         return audioTrack
     }
-
+    
+    private func createVideoTrack() -> RTCVideoTrack {
+        let videoSource = SmallWebRTCConnection.factory.videoSource()
+        self.videoCapturer = RTCCameraVideoCapturer(delegate: videoSource)
+        let videoTrack = SmallWebRTCConnection.factory.videoTrack(with: videoSource, trackId: "video0")
+        return videoTrack
+    }
+    
     // MARK: Data Channels
     private func createDataChannel(label:String) -> RTCDataChannel? {
         let config = RTCDataChannelConfiguration()
@@ -180,30 +240,32 @@ final class SmallWebRTCConnection: NSObject {
         }
         return dataChannel
     }
-
+    
     func sendMessage( message: Encodable) throws{
         let jsonData = try JSONEncoder().encode(message);
         Logger.shared.debug("Sending message: \(String(data: jsonData, encoding: .utf8) ?? "")")
         let buffer = RTCDataBuffer(data: jsonData, isBinary: true)
         self.signallingDataChannel?.sendData(buffer)
     }
-
+    
     func disconnect() {
         self.signallingDataChannel?.close()
         self.peerConnection.close()
-
+        
         self.signallingDataChannel = nil
         self.localAudioTrack = nil
         self.remoteAudioTrack = nil
+        self.localVideoTrack = nil
+        self.remoteVideoTrack = nil
     }
 }
 
 extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
         Logger.shared.debug("peerConnection new signaling state: \(stateChanged)")
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         Logger.shared.debug("peerConnection did add stream")
         if !stream.audioTracks.isEmpty {
@@ -211,7 +273,7 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
             self.delegate?.onTracksUpdated()
         }
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {
         Logger.shared.debug("peerConnection did remove stream")
         if !stream.audioTracks.isEmpty && self.remoteAudioTrack != nil && self.remoteAudioTrack?.trackId == stream.audioTracks[0].trackId {
@@ -219,35 +281,35 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
             self.delegate?.onTracksUpdated()
         }
     }
-
+    
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {
         Logger.shared.debug("peerConnection should negotiate")
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         Logger.shared.debug("peerConnection new connection state: \(newState)")
         self.delegate?.onConnectionStateChanged(state: newState)
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {
         Logger.shared.debug("peerConnection new gathering state: \(newState)")
         if newState == .complete {
             self.iceGatheringCompleted = true
         }
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         Logger.shared.debug("peerConnection did discover new ice candidate \(candidate.sdp)")
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {
         Logger.shared.debug("peerConnection did remove candidate(s)")
     }
-
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
         Logger.shared.debug("peerConnection did receive new data channel")
     }
-
+    
 }
 extension SmallWebRTCConnection {
     private func setTrackEnabled<T: RTCMediaStreamTrack>(_ type: T.Type, isEnabled: Bool) {
@@ -257,31 +319,43 @@ extension SmallWebRTCConnection {
     }
 }
 
-// MARK:- Audio control
+// MARK:- Audio and Video control
 extension SmallWebRTCConnection {
     func muteAudio() {
         self.setAudioEnabled(false)
     }
-
+    
     func unmuteAudio() {
         self.setAudioEnabled(true)
     }
-
+    
     func isAudioEnabled() -> Bool {
         return self.localAudioTrack?.isEnabled ?? true
     }
-
+    
     private func setAudioEnabled(_ isEnabled: Bool) {
         setTrackEnabled(RTCAudioTrack.self, isEnabled: isEnabled)
+    }
+    
+    func hideVideo() {
+        self.setVideoEnabled(false)
+    }
+    
+    func showVideo() {
+        self.setVideoEnabled(true)
+    }
+    
+    private func setVideoEnabled(_ isEnabled: Bool) {
+        setTrackEnabled(RTCVideoTrack.self, isEnabled: isEnabled)
     }
 }
 
 extension SmallWebRTCConnection: RTCDataChannelDelegate {
-
+    
     func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
         Logger.shared.debug("dataChannel did change state: \(dataChannel.readyState)")
     }
-
+    
     func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
         do {
             let receivedValue = try JSONDecoder().decode(Value.self, from: buffer.data)
@@ -290,5 +364,5 @@ extension SmallWebRTCConnection: RTCDataChannelDelegate {
             Logger.shared.error("Error decoding JSON into Value: \(error.localizedDescription)")
         }
     }
-
+    
 }
