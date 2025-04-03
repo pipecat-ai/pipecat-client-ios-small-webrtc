@@ -166,7 +166,7 @@ final class SmallWebRTCConnection: NSObject {
     }
     
     // MARK: Media
-    func startCaptureLocalVideo(renderer: RTCVideoRenderer? = nil) {
+    func startCaptureLocalVideo() {
         guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
             return
         }
@@ -191,10 +191,51 @@ final class SmallWebRTCConnection: NSObject {
         capturer.startCapture(with: frontCamera,
                               format: format,
                               fps: Int(fps.maxFrameRate))
-        
-        if (renderer != nil) {
-            self.localVideoTrack?.add(renderer!)
+    }
+    
+    func switchCamera(to deviceID: String) {
+        guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
+            return
         }
+        
+        let captureDevices = RTCCameraVideoCapturer.captureDevices()
+        guard let selectedDevice = captureDevices.first(where: { $0.uniqueID == deviceID }) else {
+            Logger.shared.warn("Device with ID \(deviceID) not found")
+            return
+        }
+        
+        // Choose the highest resolution format
+        guard let format = (RTCCameraVideoCapturer.supportedFormats(for: selectedDevice).sorted { (f1, f2) -> Bool in
+            let width1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
+            let width2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
+            return width1 < width2
+        }).last,
+        
+        // Choose the highest fps
+        let fps = (format.videoSupportedFrameRateRanges.sorted { return $0.maxFrameRate < $1.maxFrameRate }.last) else {
+            return
+        }
+        
+        Logger.shared.info("Switching to camera: \(selectedDevice.localizedName)")
+        
+        capturer.startCapture(with: selectedDevice, format: format, fps: Int(fps.maxFrameRate))
+    }
+    
+    func getCurrentCamera() -> Device? {
+        guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
+            return nil
+        }
+        
+        guard let currentDevice = capturer.captureSession.inputs.compactMap({ ($0 as? AVCaptureDeviceInput)?.device }).first else {
+            return nil
+        }
+        
+        return Device(
+            deviceID: currentDevice.uniqueID,
+            groupID: "",
+            kind: DeviceKind.videoInput,
+            label: currentDevice.localizedName
+        )
     }
     
     func renderRemoteVideo(to renderer: RTCVideoRenderer) {

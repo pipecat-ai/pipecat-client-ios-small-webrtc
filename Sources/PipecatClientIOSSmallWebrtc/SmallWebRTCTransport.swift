@@ -13,6 +13,7 @@ public class SmallWebRTCTransport: Transport {
     private var _state: TransportState = .disconnected
     private var smallWebRTCConnection: SmallWebRTCConnection?  = nil
     private let audioManager = AudioManager()
+    private let videoManager = VideoManager()
     private var connectedBotParticipant = Participant(
         id: ParticipantId(id: UUID().uuidString),
         name: "Small WebRTC Bot",
@@ -165,8 +166,7 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func getAllCams() -> [PipecatClientIOS.MediaDeviceInfo] {
-        logOperationNotSupported(#function)
-        return []
+        videoManager.availableDevices.map { $0.toRtvi() }
     }
     
     public func updateMic(micId: PipecatClientIOS.MediaDeviceId) async throws {
@@ -177,7 +177,7 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func updateCam(camId: PipecatClientIOS.MediaDeviceId) async throws {
-        logOperationNotSupported(#function)
+        self.smallWebRTCConnection?.switchCamera(to: camId.id)
     }
     
     /// What we report as the selected mic.
@@ -186,8 +186,7 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func selectedCam() -> PipecatClientIOS.MediaDeviceInfo? {
-        logOperationNotSupported(#function)
-        return nil
+        return self.smallWebRTCConnection?.getCurrentCamera()?.toRtvi()
     }
     
     public func enableMic(enable: Bool) async throws {
@@ -295,10 +294,6 @@ public class SmallWebRTCTransport: Transport {
     }
     
     // MARK: - Private
-    
-    private func logOperationNotSupported(_ operationName: String) {
-        Logger.shared.warn("\(operationName) not supported")
-    }
     
     /// Refresh what we should report as the selected mic.
     private func refreshSelectedMicIfNeeded() {
