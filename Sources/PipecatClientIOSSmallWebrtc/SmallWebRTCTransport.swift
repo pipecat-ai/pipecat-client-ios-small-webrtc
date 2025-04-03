@@ -112,15 +112,9 @@ public class SmallWebRTCTransport: Transport {
     public func connect(authBundle: PipecatClientIOS.AuthBundle?) async throws {
         self.setState(state: .connecting)
         
-        let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers)
+        let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers, enableCam: self.options.enableCam, enableMic: self.options.enableMic)
         self.smallWebRTCConnection = webrtcClient
-        
         webrtcClient.delegate = self
-        
-        // TODO: we should consider the options to know if we should r not
-        // create the audio and video track
-        // right now we are always capturing both for testing
-        webrtcClient.startCaptureLocalVideo()
         
         // start connecting
         do {

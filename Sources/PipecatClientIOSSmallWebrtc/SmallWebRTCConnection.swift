@@ -34,12 +34,18 @@ final class SmallWebRTCConnection: NSObject {
     
     private var iceGatheringCompleted = false
     
+    private var enableCam: Bool
+    private var enableMic: Bool
+    
     @available(*, unavailable)
     override init() {
         fatalError("SmallWebRTCConnection:init is unavailable")
     }
     
-    required init(iceServers: [String]) {
+    required init(iceServers: [String], enableCam: Bool, enableMic: Bool) {
+        self.enableCam = enableCam
+        self.enableMic = enableMic
+        
         let config = RTCConfiguration()
         if !iceServers.isEmpty {
             config.iceServers = [RTCIceServer(urlStrings: iceServers)]
@@ -60,8 +66,9 @@ final class SmallWebRTCConnection: NSObject {
         }
         
         self.peerConnection = peerConnection
-        
         super.init()
+        
+        self.addInitialTransceivers()
         self.createMediaSenders()
         self.peerConnection.delegate = self
     }
@@ -242,20 +249,41 @@ final class SmallWebRTCConnection: NSObject {
         self.remoteVideoTrack?.add(renderer)
     }
     
+    private func addInitialTransceivers() {
+        // Adding an audio transceiver with sendrecv direction
+        let transceiverInit = RTCRtpTransceiverInit()
+        transceiverInit.direction = .sendRecv
+        self.peerConnection.addTransceiver(of: .audio, init: transceiverInit)
+        // Adding a video transceiver with sendrecv direction
+        self.peerConnection.addTransceiver(of: .video, init: transceiverInit)
+    }
+    
+    private func getAudioTransceiver() -> RTCRtpTransceiver? {
+        // Transceivers are created in order, so the first one should be audio
+        return self.peerConnection.transceivers.first
+    }
+
+    private func getVideoTransceiver() -> RTCRtpTransceiver? {
+        // The second transceiver should be video
+        return self.peerConnection.transceivers.dropFirst().first
+    }
+    
     private func createMediaSenders() {
-        let streamId = "stream"
-        
         // Audio
-        let audioTrack = self.createAudioTrack()
-        self.localAudioTrack = audioTrack
-        self.peerConnection.add(audioTrack, streamIds: [streamId])
+        if (self.enableMic) {
+            let audioTrack = self.createAudioTrack()
+            self.getAudioTransceiver()?.sender.track = audioTrack
+            self.localAudioTrack = audioTrack
+        }
         
         // Video
-        let videoTrack = self.createVideoTrack()
-        self.localVideoTrack = videoTrack
-        self.peerConnection.add(videoTrack, streamIds: [streamId])
-        // TODO: check if we need to do something different, like we do for audioTrack
-        self.remoteVideoTrack = self.peerConnection.transceivers.first { $0.mediaType == .video }?.receiver.track as? RTCVideoTrack
+        if (self.enableCam) {
+            let videoTrack = self.createVideoTrack()
+            self.startCaptureLocalVideo()
+            self.getVideoTransceiver()?.sender.track = videoTrack
+            self.localVideoTrack = videoTrack
+            self.remoteVideoTrack = self.getVideoTransceiver()?.receiver.track as? RTCVideoTrack
+        }
         
         // Data
         if let dataChannel = self.createDataChannel(label: "rtvi-events") {
