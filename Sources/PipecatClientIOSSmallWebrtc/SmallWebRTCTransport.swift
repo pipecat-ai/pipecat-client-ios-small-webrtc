@@ -13,6 +13,7 @@ public class SmallWebRTCTransport: Transport {
     private var _state: TransportState = .disconnected
     private var smallWebRTCConnection: SmallWebRTCConnection?  = nil
     private let audioManager = AudioManager()
+    private let videoManager = VideoManager()
     private var connectedBotParticipant = Participant(
         id: ParticipantId(id: UUID().uuidString),
         name: "Small WebRTC Bot",
@@ -65,6 +66,7 @@ public class SmallWebRTCTransport: Transport {
         // stop managing audio device configuration
         self.audioManager.stopManaging()
         self._selectedMic = nil
+        VideoTrackRegistry.clearRegistry()
     }
     
     private func sendOffer(connectUrl: String, sdp: RTCSessionDescription) async throws -> RTCSessionDescription {
@@ -110,11 +112,8 @@ public class SmallWebRTCTransport: Transport {
     public func connect(authBundle: PipecatClientIOS.AuthBundle?) async throws {
         self.setState(state: .connecting)
         
-        self.smallWebRTCConnection = SmallWebRTCConnection(iceServers: self.iceServers)
-        
-        guard let webrtcClient = self.smallWebRTCConnection else {
-            return
-        }
+        let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers, enableCam: self.options.enableCam, enableMic: self.options.enableMic)
+        self.smallWebRTCConnection = webrtcClient
         webrtcClient.delegate = self
         
         // start connecting
@@ -161,8 +160,7 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func getAllCams() -> [PipecatClientIOS.MediaDeviceInfo] {
-        logOperationNotSupported(#function)
-        return []
+        videoManager.availableDevices.map { $0.toRtvi() }
     }
     
     public func updateMic(micId: PipecatClientIOS.MediaDeviceId) async throws {
@@ -173,7 +171,7 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func updateCam(camId: PipecatClientIOS.MediaDeviceId) async throws {
-        logOperationNotSupported(#function)
+        self.smallWebRTCConnection?.switchCamera(to: camId.id)
     }
     
     /// What we report as the selected mic.
@@ -182,8 +180,7 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func selectedCam() -> PipecatClientIOS.MediaDeviceInfo? {
-        logOperationNotSupported(#function)
-        return nil
+        return self.smallWebRTCConnection?.getCurrentCamera()?.toRtvi()
     }
     
     public func enableMic(enable: Bool) async throws {
@@ -195,12 +192,15 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func enableCam(enable: Bool) async throws {
-        logOperationNotSupported(#function)
+        if enable {
+            self.smallWebRTCConnection?.showVideo()
+        } else {
+            self.smallWebRTCConnection?.hideVideo()
+        }
     }
     
     public func isCamEnabled() -> Bool {
-        logOperationNotSupported(#function)
-        return false
+        return self.smallWebRTCConnection?.isVideoEnabled() ?? false
     }
     
     public func isMicEnabled() -> Bool {
@@ -252,14 +252,29 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func tracks() -> PipecatClientIOS.Tracks? {
-        return .init(
-            local: .init(
+        // removing any track since we are going to store it again
+        VideoTrackRegistry.clearRegistry()
+        
+        let localVideoTrack = self.smallWebRTCConnection?.getLocalVideoTrack()
+        // Registering the track so we can retrieve it later inside the VoiceClientVideoView
+        if let localVideoTrack = localVideoTrack {
+            VideoTrackRegistry.registerTrack(originalTrack: localVideoTrack, mediaTrackId: localVideoTrack.toRtvi())
+        }
+        
+        let botVideoTrack = self.smallWebRTCConnection?.getRemoteVideoTrack()
+        // Registering the track so we can retrieve it later inside the VoiceClientVideoView
+        if let botVideoTrack = botVideoTrack {
+            VideoTrackRegistry.registerTrack(originalTrack: botVideoTrack, mediaTrackId: botVideoTrack.toRtvi())
+        }
+        
+        return Tracks(
+            local: ParticipantTracks(
                 audio: self.smallWebRTCConnection?.getLocalAudioTrack()?.toRtvi(),
-                video: nil
+                video: localVideoTrack?.toRtvi()
             ),
-            bot: .init(
+            bot: ParticipantTracks(
                 audio: self.smallWebRTCConnection?.getRemoteAudioTrack()?.toRtvi(),
-                video: nil
+                video: botVideoTrack?.toRtvi()
             )
         )
     }
@@ -273,10 +288,6 @@ public class SmallWebRTCTransport: Transport {
     }
     
     // MARK: - Private
-    
-    private func logOperationNotSupported(_ operationName: String) {
-        Logger.shared.warn("\(operationName) not supported")
-    }
     
     /// Refresh what we should report as the selected mic.
     private func refreshSelectedMicIfNeeded() {
