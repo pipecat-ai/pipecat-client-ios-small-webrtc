@@ -94,7 +94,7 @@ final class SmallWebRTCConnection: NSObject {
                 // Now ICE gathering will start, we need to wait for it to complete
                 self.waitForIceGathering(completion: {
                     // Manipulating so we can choose the codec
-                    var offer = SessionDescription.init(from: self.peerConnection.localDescription!)
+                    var offer = SmallWebRTCSessionDescription.init(from: self.peerConnection.localDescription!)
                     // It seems aiortc it is working a lot better when receiving VP8 from iOS
                     offer.sdp = self.filterCodec(kind: "video", codec: "VP8", in: offer.sdp)
                     completion(offer.rtcSessionDescription)

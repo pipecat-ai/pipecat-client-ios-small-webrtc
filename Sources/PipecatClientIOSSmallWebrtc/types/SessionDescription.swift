@@ -16,9 +16,13 @@ enum SdpType: String, Codable {
 }
 
 /// This struct is a swift wrapper over `RTCSessionDescription` for easy encode and decode
-struct SessionDescription: Codable {
+struct SmallWebRTCSessionDescription: Codable {
+    
     var sdp: String
+    var pc_id: String?
     let type: SdpType
+    // We are not handling this case in the iOS SDK yet.
+    let restart_pc: Bool = false
     
     init(from rtcSessionDescription: RTCSessionDescription) {
         self.sdp = rtcSessionDescription.sdp

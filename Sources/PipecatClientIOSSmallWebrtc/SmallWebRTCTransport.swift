@@ -21,6 +21,7 @@ public class SmallWebRTCTransport: Transport {
     )
     private var devicesInitialized: Bool = false
     private var _selectedMic: MediaDeviceInfo?
+    private var pc_id: String?
     
     // MARK: - Public
     
@@ -69,7 +70,7 @@ public class SmallWebRTCTransport: Transport {
         VideoTrackRegistry.clearRegistry()
     }
     
-    private func sendOffer(connectUrl: String, sdp: RTCSessionDescription) async throws -> RTCSessionDescription {
+    private func sendOffer(connectUrl: String, offer: SmallWebRTCSessionDescription) async throws -> SmallWebRTCSessionDescription {
         guard let url = URL(string: connectUrl) else {
             throw InvalidAuthBundleError()
         }
@@ -87,7 +88,7 @@ public class SmallWebRTCTransport: Transport {
              "sdp": Value.string(sdp.sdp),
              "type": Value.number(Double(sdp.type.rawValue))
              ])*/
-            request.httpBody = try JSONEncoder().encode( SessionDescription(from:sdp))
+            request.httpBody = try JSONEncoder().encode(offer)
             
             Logger.shared.debug("Will send offer")
             
@@ -99,34 +100,37 @@ public class SmallWebRTCTransport: Transport {
                 throw HttpError(message: message)
             }
             
-            let answer = try JSONDecoder().decode(SessionDescription.self, from: data)
+            let answer = try JSONDecoder().decode(SmallWebRTCSessionDescription.self, from: data)
             
             Logger.shared.debug("Received answer")
             
-            return answer.rtcSessionDescription
+            return answer
         } catch {
             throw HttpError(message: "Failed while trying to receive answer.", underlyingError: error)
         }
     }
     
-    public func connect(authBundle: PipecatClientIOS.AuthBundle?) async throws {
-        self.setState(state: .connecting)
-        
-        let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers, enableCam: self.options.enableCam, enableMic: self.options.enableMic)
-        self.smallWebRTCConnection = webrtcClient
-        webrtcClient.delegate = self
-        
+    private func negotiate() async throws {
         // start connecting
+        guard let webrtcClient = self.smallWebRTCConnection else {
+            Logger.shared.warn("Unable to negotiate, no peer connection available.")
+            return
+        }
         do {
-            let offer = try await webrtcClient.offer()
+            let sdp = try await webrtcClient.offer()
             
             guard let connectUrl = self.options.params.config.serverUrl else {
                 Logger.shared.error("Missing Base URL")
                 return
             }
             
-            let answer = try await self.sendOffer(connectUrl: connectUrl, sdp: offer)
-            webrtcClient.set(remoteSdp: answer, completion: { error in
+            var offer = SmallWebRTCSessionDescription(from:sdp)
+            offer.pc_id = self.pc_id
+            
+            let answer = try await self.sendOffer(connectUrl: connectUrl, offer: offer)
+            self.pc_id = answer.pc_id
+            
+            webrtcClient.set(remoteSdp: answer.rtcSessionDescription, completion: { error in
                 if let error = error {
                     Logger.shared.error("Failed to set remote SDP: \(error.localizedDescription)")
                 }
@@ -137,6 +141,16 @@ public class SmallWebRTCTransport: Transport {
             self.setState(state: .error)
             throw error
         }
+    }
+    
+    public func connect(authBundle: PipecatClientIOS.AuthBundle?) async throws {
+        self.setState(state: .connecting)
+        
+        let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers, enableCam: self.options.enableCam, enableMic: self.options.enableMic)
+        self.smallWebRTCConnection = webrtcClient
+        webrtcClient.delegate = self
+        
+        try await self.negotiate()
         
         // go to connected state
         // (unless we've already leaped ahead to the ready state - see connectionDidFinishModelSetup())
@@ -317,7 +331,16 @@ extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
     }
     
     func onMsgReceived(msg: PipecatClientIOS.Value) {
-        self.handleMessage(msg)
+        Task {
+            let dict = msg.asObject
+            if (dict["type"] != nil && dict["type"]!!.asString == SIGNALLING_TYPE) {
+                if let message = SignallingMessage(rawValue: dict["message"]!!.asString) {
+                    await self.handleSignallingMessage(message)
+                }
+            } else {
+                self.handleMessage(msg)
+            }
+        }
     }
     
     func onTracksUpdated() {
@@ -336,7 +359,18 @@ extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
                 ))
             }
         }
-        // TODO: implement the signalling message
+    }
+    
+    private func handleSignallingMessage(_ msg: SignallingMessage) async {
+        Logger.shared.info("Handling signalling message: \(msg)")
+        do {
+            switch msg {
+            case .renegotiate:
+                try await self.negotiate()
+            }
+        } catch {
+            Logger.shared.error("Error while handling signalling message: \(error.localizedDescription)")
+        }
     }
     
 }
