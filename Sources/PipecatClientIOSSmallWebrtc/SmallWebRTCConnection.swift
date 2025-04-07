@@ -173,59 +173,55 @@ final class SmallWebRTCConnection: NSObject {
     }
     
     // MARK: Media
-    func startCaptureLocalVideo() {
+    func stopLocalVideoCapturer() {
         guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
             return
         }
-        
-        guard
-            let frontCamera = (RTCCameraVideoCapturer.captureDevices().first { $0.position == .front }),
-            
-                // choose highest res
-            let format = (RTCCameraVideoCapturer.supportedFormats(for: frontCamera).sorted { (f1, f2) -> Bool in
-                let width1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
-                let width2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
-                return width1 < width2
-            }).last,
-            
-                // choose highest fps
-            let fps = (format.videoSupportedFrameRateRanges.sorted { return $0.maxFrameRate < $1.maxFrameRate }.last) else {
-            return
-        }
-        
-        Logger.shared.info("FRAME RATE \(fps.maxFrameRate)")
-        
-        capturer.startCapture(with: frontCamera,
-                              format: format,
-                              fps: Int(fps.maxFrameRate))
+        capturer.stopCapture()
     }
     
-    func switchCamera(to deviceID: String) {
+    func startOrSwitchLocalVideoCapturer(deviceID: String? = nil) {
         guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
             return
         }
         
         let captureDevices = RTCCameraVideoCapturer.captureDevices()
-        guard let selectedDevice = captureDevices.first(where: { $0.uniqueID == deviceID }) else {
-            Logger.shared.warn("Device with ID \(deviceID) not found")
+        
+        // Select device: use provided deviceID or default to front camera
+        let selectedDevice: AVCaptureDevice?
+        if let deviceID = deviceID {
+            selectedDevice = captureDevices.first(where: { $0.uniqueID == deviceID })
+            if selectedDevice == nil {
+                Logger.shared.warn("Device with ID \(deviceID) not found")
+                return
+            }
+        } else {
+            selectedDevice = captureDevices.first(where: { $0.position == .front })
+            if selectedDevice == nil {
+                Logger.shared.warn("Front camera not found")
+                return
+            }
+        }
+        
+        guard let device = selectedDevice else { return }
+        
+        // Choose highest resolution format
+        guard let format = RTCCameraVideoCapturer.supportedFormats(for: device)
+            .sorted(by: { f1, f2 in
+                let width1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
+                let width2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
+                return width1 < width2
+            }).last,
+              
+                // Choose highest fps
+              let fps = format.videoSupportedFrameRateRanges
+            .sorted(by: { $0.maxFrameRate < $1.maxFrameRate }).last else {
             return
         }
         
-        // Choose the highest resolution format
-        guard let format = (RTCCameraVideoCapturer.supportedFormats(for: selectedDevice).sorted { (f1, f2) -> Bool in
-            let width1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
-            let width2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
-            return width1 < width2
-        }).last,
+        Logger.shared.info("Starting capture on: \(device.localizedName) at \(fps.maxFrameRate) FPS")
         
-        // Choose the highest fps
-        let fps = (format.videoSupportedFrameRateRanges.sorted { return $0.maxFrameRate < $1.maxFrameRate }.last) else {
-            return
-        }
-        
-        Logger.shared.info("Switching to camera: \(selectedDevice.localizedName)")
-        
-        capturer.startCapture(with: selectedDevice, format: format, fps: Int(fps.maxFrameRate))
+        capturer.startCapture(with: device, format: format, fps: Int(fps.maxFrameRate))
     }
     
     func getCurrentCamera() -> Device? {
@@ -245,10 +241,6 @@ final class SmallWebRTCConnection: NSObject {
         )
     }
     
-    func renderRemoteVideo(to renderer: RTCVideoRenderer) {
-        self.remoteVideoTrack?.add(renderer)
-    }
-    
     private func addInitialTransceivers() {
         // Adding an audio transceiver with sendrecv direction
         let transceiverInit = RTCRtpTransceiverInit()
@@ -262,7 +254,7 @@ final class SmallWebRTCConnection: NSObject {
         // Transceivers are created in order, so the first one should be audio
         return self.peerConnection.transceivers.first
     }
-
+    
     private func getVideoTransceiver() -> RTCRtpTransceiver? {
         // The second transceiver should be video
         return self.peerConnection.transceivers.dropFirst().first
@@ -279,7 +271,6 @@ final class SmallWebRTCConnection: NSObject {
         // Video
         if (self.enableCam) {
             let videoTrack = self.createVideoTrack()
-            self.startCaptureLocalVideo()
             self.getVideoTransceiver()?.sender.track = videoTrack
             self.localVideoTrack = videoTrack
             self.remoteVideoTrack = self.getVideoTransceiver()?.receiver.track as? RTCVideoTrack
@@ -418,10 +409,6 @@ extension SmallWebRTCConnection {
             return
         }
         self.setVideoEnabled(false)
-        guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
-            return
-        }
-        capturer.stopCapture()
     }
     
     func showVideo() {
@@ -430,7 +417,6 @@ extension SmallWebRTCConnection {
             return
         }
         self.setVideoEnabled(true)
-        self.startCaptureLocalVideo()
     }
     
     func isVideoEnabled() -> Bool {
@@ -467,30 +453,30 @@ extension SmallWebRTCConnection {
         let lines = sdp.components(separatedBy: "\n")
         var isMediaSection = false
         var modifiedLines: [String] = []
-
+        
         let codecPattern = "a=rtpmap:(\\d+) \(NSRegularExpression.escapedPattern(for: codec))"
         let rtxPattern = "a=fmtp:(\\d+) apt=(\\d+)"
         let mediaPattern = "m=\(kind) \\d+ [A-Z/]+(?: (\\d+))*"
-
+        
         guard let codecRegex = try? NSRegularExpression(pattern: codecPattern),
               let rtxRegex = try? NSRegularExpression(pattern: rtxPattern),
               let mediaRegex = try? NSRegularExpression(pattern: mediaPattern) else {
             return sdp
         }
-
+        
         for line in lines {
             if line.starts(with: "m=\(kind) ") {
                 isMediaSection = true
             } else if line.starts(with: "m=") {
                 isMediaSection = false
             }
-
+            
             if isMediaSection {
                 if let match = codecRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
                    let payloadRange = Range(match.range(at: 1), in: line) {
                     allowedPayloadTypes.append(String(line[payloadRange]))
                 }
-
+                
                 if let match = rtxRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
                    let payloadTypeRange = Range(match.range(at: 1), in: line),
                    let aptRange = Range(match.range(at: 2), in: line),
@@ -499,7 +485,7 @@ extension SmallWebRTCConnection {
                 }
             }
         }
-
+        
         isMediaSection = false
         for line in lines {
             if line.starts(with: "m=\(kind) ") {
@@ -514,7 +500,7 @@ extension SmallWebRTCConnection {
             } else if line.starts(with: "m=") {
                 isMediaSection = false
             }
-
+            
             if isMediaSection {
                 let skipPatterns = ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
                 if skipPatterns.contains(where: { line.starts(with: $0) }),
@@ -523,10 +509,10 @@ extension SmallWebRTCConnection {
                     continue
                 }
             }
-
+            
             modifiedLines.append(line)
         }
-
+        
         return modifiedLines.joined(separator: "\n")
     }
     

@@ -22,6 +22,7 @@ public class SmallWebRTCTransport: Transport {
     private var devicesInitialized: Bool = false
     private var _selectedMic: MediaDeviceInfo?
     private var pc_id: String?
+    private var preferredCamId: PipecatClientIOS.MediaDeviceId?
     
     // MARK: - Public
     
@@ -147,8 +148,9 @@ public class SmallWebRTCTransport: Transport {
         self.setState(state: .connecting)
         
         let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers, enableCam: self.options.enableCam, enableMic: self.options.enableMic)
-        self.smallWebRTCConnection = webrtcClient
         webrtcClient.delegate = self
+        webrtcClient.startOrSwitchLocalVideoCapturer(deviceID: self.preferredCamId?.id)
+        self.smallWebRTCConnection = webrtcClient
         
         try await self.negotiate()
         
@@ -181,7 +183,8 @@ public class SmallWebRTCTransport: Transport {
     }
     
     public func updateCam(camId: PipecatClientIOS.MediaDeviceId) async throws {
-        self.smallWebRTCConnection?.switchCamera(to: camId.id)
+        self.preferredCamId = camId
+        self.smallWebRTCConnection?.startOrSwitchLocalVideoCapturer(deviceID: camId.id)
     }
     
     /// What we report as the selected mic.
@@ -204,8 +207,10 @@ public class SmallWebRTCTransport: Transport {
     public func enableCam(enable: Bool) async throws {
         if enable {
             self.smallWebRTCConnection?.showVideo()
+            self.smallWebRTCConnection?.startOrSwitchLocalVideoCapturer(deviceID: self.preferredCamId?.id)
         } else {
             self.smallWebRTCConnection?.hideVideo()
+            self.smallWebRTCConnection?.stopLocalVideoCapturer()
         }
     }
     
