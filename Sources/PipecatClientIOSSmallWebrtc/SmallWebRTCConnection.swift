@@ -413,11 +413,24 @@ extension SmallWebRTCConnection {
     }
     
     func hideVideo() {
+        guard self.localVideoTrack?.isEnabled == true else {
+            // nothing to do here
+            return
+        }
         self.setVideoEnabled(false)
+        guard let capturer = self.videoCapturer as? RTCCameraVideoCapturer else {
+            return
+        }
+        capturer.stopCapture()
     }
     
     func showVideo() {
+        guard self.localVideoTrack?.isEnabled == false else {
+            // nothing to do here
+            return
+        }
         self.setVideoEnabled(true)
+        self.startCaptureLocalVideo()
     }
     
     func isVideoEnabled() -> Bool {

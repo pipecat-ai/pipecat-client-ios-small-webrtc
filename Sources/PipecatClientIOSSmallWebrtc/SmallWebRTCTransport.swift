@@ -152,11 +152,7 @@ public class SmallWebRTCTransport: Transport {
         
         try await self.negotiate()
         
-        // go to connected state
-        // (unless we've already leaped ahead to the ready state - see connectionDidFinishModelSetup())
-        if _state == .connecting {
-            self.setState(state: .connected)
-        }
+        self.setState(state: .connected)
     }
     
     public func disconnect() async throws {
