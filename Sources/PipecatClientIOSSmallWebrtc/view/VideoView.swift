@@ -77,12 +77,12 @@ open class VideoView: UIView {
     }
 
     /// The view's delegate.
-    public weak var delegate: VideoViewDelegate? = nil
+    public weak var delegate: VideoViewDelegate?
 
     internal let rtcView: RTCMTLVideoView = .init(frame: .zero)
 
     private var contentModeConstraints: [NSLayoutConstraint] = []
-    private var rtcDelegate: Delegate? = nil
+    private var rtcDelegate: Delegate?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)

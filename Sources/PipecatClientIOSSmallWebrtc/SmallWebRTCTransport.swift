@@ -5,16 +5,14 @@ import WebRTC
 
 /// An RTVI transport to connect with the SmallWebRTCTransport  backend.
 public class SmallWebRTCTransport: Transport {
-    
-    public static let SERVICE_NAME = "small-webrtc-transport";
-    
     private var iceServers: [String] = []
-    private let options: RTVIClientOptions
+    private var options: PipecatClientOptions?
+    private var smallWebRTConnectionParams: SmallWebRTCTransportConnectionParams?
     private var _state: TransportState = .disconnected
-    private var smallWebRTCConnection: SmallWebRTCConnection?  = nil
+    private var smallWebRTCConnection: SmallWebRTCConnection?
     private let audioManager = AudioManager()
     private let videoManager = VideoManager()
-    private var connectedBotParticipant = Participant(
+    var connectedBotParticipant = Participant(
         id: ParticipantId(id: UUID().uuidString),
         name: "Small WebRTC Bot",
         local: false
@@ -23,119 +21,140 @@ public class SmallWebRTCTransport: Transport {
     private var _selectedMic: MediaDeviceInfo?
     private var pc_id: String?
     private var preferredCamId: PipecatClientIOS.MediaDeviceId?
-    
+    private var _tracks: Tracks?
+
     // MARK: - Public
-    
+
     /// Voice client delegate (used directly by user's code)
-    public weak var delegate: PipecatClientIOS.RTVIClientDelegate?
-    
+    public weak var delegate: PipecatClientIOS.PipecatClientDelegate?
+
     /// RTVI inbound message handler (for sending RTVI-style messages to voice client code to handle)
     public var onMessage: ((PipecatClientIOS.RTVIMessageInbound) -> Void)?
-    
-    public required convenience init(options: PipecatClientIOS.RTVIClientOptions) {
-        self.init(options: options, iceServers: nil)
+
+    public required convenience init() {
+        self.init(iceServers: nil)
     }
-    
-    public init(options: PipecatClientIOS.RTVIClientOptions, iceServers: [String]?) {
-        self.options = options
+
+    public init(iceServers: [String]?) {
         self.audioManager.delegate = self
         if iceServers != nil {
             self.iceServers = iceServers!
         }
     }
-    
+
+    public func initialize(options: PipecatClientOptions) {
+        self.options = options
+    }
+
+    func handleTracksUpdated() {
+        guard let currentTracks = self.tracks() else {
+            // Nothing to do here, no tracks available yet
+            return
+        }
+
+        if let previousTracks = self._tracks {
+            self.handleTrackChanges(previous: previousTracks, current: currentTracks)
+        } else {
+            // First time tracks are available, notify all starting tracks
+            self.handleInitialTracks(tracks: currentTracks)
+        }
+
+        self._tracks = currentTracks
+    }
+
     public func initDevices() async throws {
-        if (self.devicesInitialized) {
+        if self.devicesInitialized {
             // There is nothing to do in this case
             return
         }
-        
+
         self.setState(state: .initializing)
-        
+
         // start managing audio device configuration
         self.audioManager.startManagingIfNecessary()
-        
+
         // initialize devices state and report initial available & selected devices
         self._selectedMic = self.getSelectedMic()
-        self.delegate?.onAvailableMicsUpdated(mics: self.getAllMics());
+        self.delegate?.onAvailableMicsUpdated(mics: self.getAllMics())
         self.delegate?.onMicUpdated(mic: self._selectedMic)
-        
+        self.delegate?.onAvailableCamsUpdated(cams: self.getAllCams())
+        self.delegate?.onCamUpdated(cam: self.selectedCam())
+
         self.setState(state: .initialized)
         self.devicesInitialized = true
     }
-    
+
     public func release() {
         // stop managing audio device configuration
         self.audioManager.stopManaging()
         self._selectedMic = nil
         VideoTrackRegistry.clearRegistry()
     }
-    
-    private func sendOffer(connectUrl: String, offer: SmallWebRTCSessionDescription) async throws -> SmallWebRTCSessionDescription {
-        guard let url = URL(string: connectUrl) else {
-            throw InvalidAuthBundleError()
-        }
-        
+
+    private func sendOffer(connectUrl: URL, offer: SmallWebRTCSessionDescription) async throws
+        -> SmallWebRTCSessionDescription {
         Logger.shared.debug("connectUrl, \(connectUrl)")
-        
-        var request = URLRequest(url: url)
+
+        var request = URLRequest(url: connectUrl)
         request.httpMethod = "POST"
-        
+
         // headers
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
         do {
-            /*var customBundle:Value = Value.object([
-             "sdp": Value.string(sdp.sdp),
-             "type": Value.number(Double(sdp.type.rawValue))
-             ])*/
             request.httpBody = try JSONEncoder().encode(offer)
-            
+
             Logger.shared.debug("Will send offer")
-            
+
             let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse, ( httpResponse.statusCode >= 200 && httpResponse.statusCode <= 299 ) else {
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                httpResponse.statusCode >= 200 && httpResponse.statusCode <= 299
+            else {
                 let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
                 let message = "Failed while authenticating: \(errorMessage)"
                 throw HttpError(message: message)
             }
-            
+
             let answer = try JSONDecoder().decode(SmallWebRTCSessionDescription.self, from: data)
-            
+
             Logger.shared.debug("Received answer")
-            
+
             return answer
         } catch {
             throw HttpError(message: "Failed while trying to receive answer.", underlyingError: error)
         }
     }
-    
+
     private func negotiate() async throws {
         // start connecting
         guard let webrtcClient = self.smallWebRTCConnection else {
             Logger.shared.warn("Unable to negotiate, no peer connection available.")
             return
         }
+        guard let smallWebRTConnectionParams = self.smallWebRTConnectionParams else {
+            Logger.shared.warn("Unable to negotiate, no connection params available.")
+            return
+        }
         do {
             let sdp = try await webrtcClient.offer()
-            
-            guard let connectUrl = self.options.params.config.serverUrl else {
-                Logger.shared.error("Missing Base URL")
-                return
-            }
-            
-            var offer = SmallWebRTCSessionDescription(from:sdp)
+
+            let connectUrl = smallWebRTConnectionParams.webrtcRequestParams.endpoint
+
+            var offer = SmallWebRTCSessionDescription(from: sdp)
             offer.pc_id = self.pc_id
-            
+
             let answer = try await self.sendOffer(connectUrl: connectUrl, offer: offer)
             self.pc_id = answer.pc_id
-            
-            webrtcClient.set(remoteSdp: answer.rtcSessionDescription, completion: { error in
-                if let error = error {
-                    Logger.shared.error("Failed to set remote SDP: \(error.localizedDescription)")
+
+            webrtcClient.set(
+                remoteSdp: answer.rtcSessionDescription,
+                completion: { error in
+                    if let error = error {
+                        Logger.shared.error("Failed to set remote SDP: \(error.localizedDescription)")
+                    }
                 }
-            })
+            )
         } catch {
             Logger.shared.error("Received error while trying to connect \(error)")
             self.smallWebRTCConnection = nil
@@ -143,68 +162,101 @@ public class SmallWebRTCTransport: Transport {
             throw error
         }
     }
-    
-    public func connect(authBundle: PipecatClientIOS.AuthBundle?) async throws {
+
+    public func connect(transportParams: TransportConnectionParams?) async throws {
         self.setState(state: .connecting)
-        
-        let webrtcClient = SmallWebRTCConnection(iceServers: self.iceServers, enableCam: self.options.enableCam, enableMic: self.options.enableMic)
+
+        guard let smallWebRTConnectionParams = transportParams as? SmallWebRTCTransportConnectionParams else {
+            throw InvalidTransportParamsError()
+        }
+        self.smallWebRTConnectionParams = smallWebRTConnectionParams
+
+        let webrtcClient = SmallWebRTCConnection(
+            iceServers: self.iceServers,
+            enableCam: self.options?.enableCam ?? false,
+            enableMic: self.options?.enableMic ?? true
+        )
         webrtcClient.delegate = self
         webrtcClient.startOrSwitchLocalVideoCapturer(deviceID: self.preferredCamId?.id)
         self.smallWebRTCConnection = webrtcClient
-        
+
         try await self.negotiate()
-        
+
+        // Wait for the data channel to be open before setting state to connected
+        try await webrtcClient.waitForDataChannelOpen()
+
         self.setState(state: .connected)
+
+        try self.sendMessage(message: RTVIMessageOutbound.clientReady())
+        self.syncTrackStatus()
     }
-    
+
+    private func syncTrackStatus() {
+        guard let smallWebRTCConnection = self.smallWebRTCConnection else { return }
+        self.sendSignallingMessage(
+            message: TrackStatusMessage.init(
+                receiverIndex: SmallWebRTCTransceiverIndex.audio.rawValue,
+                enabled: smallWebRTCConnection.isAudioEnabled()
+            )
+        )
+        self.sendSignallingMessage(
+            message: TrackStatusMessage.init(
+                receiverIndex: SmallWebRTCTransceiverIndex.video.rawValue,
+                enabled: smallWebRTCConnection.isVideoEnabled()
+            )
+        )
+    }
+
     public func disconnect() async throws {
         // stop websocket connection
         self.smallWebRTCConnection?.disconnect()
         self.smallWebRTCConnection = nil
-        
-        self.delegate?.onTracksUpdated(tracks: self.tracks()!)
-        
+        self.handleTracksUpdated()
         self.setState(state: .disconnected)
     }
-    
+
     public func getAllMics() -> [PipecatClientIOS.MediaDeviceInfo] {
         audioManager.availableDevices.map { $0.toRtvi() }
     }
-    
+
     public func getAllCams() -> [PipecatClientIOS.MediaDeviceInfo] {
         videoManager.availableDevices.map { $0.toRtvi() }
     }
-    
+
     public func updateMic(micId: PipecatClientIOS.MediaDeviceId) async throws {
         audioManager.preferredAudioDevice = .init(deviceID: micId.id)
-        
+
         // Refresh what we should report as the selected mic
         refreshSelectedMicIfNeeded()
     }
-    
+
     public func updateCam(camId: PipecatClientIOS.MediaDeviceId) async throws {
         self.preferredCamId = camId
         self.smallWebRTCConnection?.startOrSwitchLocalVideoCapturer(deviceID: camId.id)
     }
-    
+
     /// What we report as the selected mic.
     public func selectedMic() -> PipecatClientIOS.MediaDeviceInfo? {
         _selectedMic
     }
-    
+
     public func selectedCam() -> PipecatClientIOS.MediaDeviceInfo? {
         return self.smallWebRTCConnection?.getCurrentCamera()?.toRtvi()
     }
-    
+
     public func enableMic(enable: Bool) async throws {
         if enable {
             self.smallWebRTCConnection?.unmuteAudio()
         } else {
             self.smallWebRTCConnection?.muteAudio()
         }
+        self.sendSignallingMessage(
+            message: TrackStatusMessage.init(receiverIndex: SmallWebRTCTransceiverIndex.audio.rawValue, enabled: enable)
+        )
     }
-    
+
     public func enableCam(enable: Bool) async throws {
+        Logger.shared.debug("Requested to enable cam: \(enable)")
         if enable {
             self.smallWebRTCConnection?.showVideo()
             self.smallWebRTCConnection?.startOrSwitchLocalVideoCapturer(deviceID: self.preferredCamId?.id)
@@ -212,16 +264,19 @@ public class SmallWebRTCTransport: Transport {
             self.smallWebRTCConnection?.hideVideo()
             self.smallWebRTCConnection?.stopLocalVideoCapturer()
         }
+        self.sendSignallingMessage(
+            message: TrackStatusMessage.init(receiverIndex: SmallWebRTCTransceiverIndex.video.rawValue, enabled: enable)
+        )
     }
-    
+
     public func isCamEnabled() -> Bool {
         return self.smallWebRTCConnection?.isVideoEnabled() ?? false
     }
-    
+
     public func isMicEnabled() -> Bool {
         return self.smallWebRTCConnection?.isAudioEnabled() ?? true
     }
-    
+
     public func sendMessage(message: PipecatClientIOS.RTVIMessageOutbound) throws {
         do {
             try self.smallWebRTCConnection?.sendMessage(message: message)
@@ -229,81 +284,85 @@ public class SmallWebRTCTransport: Transport {
             Logger.shared.error("Error sending message: \(error.localizedDescription)")
         }
     }
-    
+
+    private func sendSignallingMessage(message: OutboundSignallingMessageProtocol) {
+        let signallingMessage = OutboundSignallingMessage.init(message: message)
+        do {
+            try self.smallWebRTCConnection?.sendMessage(message: signallingMessage)
+        } catch {
+            Logger.shared.error("Error sending signalling message: \(error.localizedDescription)")
+        }
+    }
+
     public func state() -> PipecatClientIOS.TransportState {
         self._state
     }
-    
+
     public func setState(state: PipecatClientIOS.TransportState) {
         let previousState = self._state
-        
+
         self._state = state
-        
+
         // Fire delegate methods as needed
         if state != previousState {
             self.delegate?.onTransportStateChanged(state: self._state)
-            
+
             if state == .connected {
                 self.delegate?.onConnected()
                 // New bot participant id each time we connect
-                connectedBotParticipant = Participant(
+                self.connectedBotParticipant = Participant(
                     id: ParticipantId(id: UUID().uuidString),
                     name: connectedBotParticipant.name,
                     local: connectedBotParticipant.local
                 )
                 self.delegate?.onParticipantJoined(participant: connectedBotParticipant)
                 self.delegate?.onBotConnected(participant: connectedBotParticipant)
-            }
-            else if state == .disconnected {
+            } else if state == .disconnected {
                 self.delegate?.onParticipantLeft(participant: connectedBotParticipant)
                 self.delegate?.onBotDisconnected(participant: connectedBotParticipant)
                 self.delegate?.onDisconnected()
             }
         }
     }
-    
-    public func isConnected() -> Bool {
-        return [.connected, .ready].contains(self._state)
-    }
-    
+
     public func tracks() -> PipecatClientIOS.Tracks? {
         // removing any track since we are going to store it again
         VideoTrackRegistry.clearRegistry()
-        
+
         let localVideoTrack = self.smallWebRTCConnection?.getLocalVideoTrack()
         // Registering the track so we can retrieve it later inside the VoiceClientVideoView
         if let localVideoTrack = localVideoTrack {
-            VideoTrackRegistry.registerTrack(originalTrack: localVideoTrack, mediaTrackId: localVideoTrack.toRtvi())
+            VideoTrackRegistry.registerTrack(originalTrack: localVideoTrack, mediaTrackId: localVideoTrack.toRtvi().id)
         }
-        
+
         let botVideoTrack = self.smallWebRTCConnection?.getRemoteVideoTrack()
         // Registering the track so we can retrieve it later inside the VoiceClientVideoView
         if let botVideoTrack = botVideoTrack {
-            VideoTrackRegistry.registerTrack(originalTrack: botVideoTrack, mediaTrackId: botVideoTrack.toRtvi())
+            VideoTrackRegistry.registerTrack(originalTrack: botVideoTrack, mediaTrackId: botVideoTrack.toRtvi().id)
         }
-        
+
         return Tracks(
             local: ParticipantTracks(
                 audio: self.smallWebRTCConnection?.getLocalAudioTrack()?.toRtvi(),
-                video: localVideoTrack?.toRtvi()
+                video: localVideoTrack?.toRtvi(),
+                screenAudio: nil,
+                screenVideo: nil
             ),
             bot: ParticipantTracks(
                 audio: self.smallWebRTCConnection?.getRemoteAudioTrack()?.toRtvi(),
-                video: botVideoTrack?.toRtvi()
+                video: botVideoTrack?.toRtvi(),
+                screenAudio: nil,
+                screenVideo: nil
             )
         )
     }
-    
-    public func expiry() -> Int? {
-        return nil
-    }
-    
+
     public func setIceServers(iceServers: [String]) {
         self.iceServers = iceServers
     }
-    
+
     // MARK: - Private
-    
+
     /// Refresh what we should report as the selected mic.
     private func refreshSelectedMicIfNeeded() {
         let newSelectedMic = getSelectedMic()
@@ -312,30 +371,32 @@ public class SmallWebRTCTransport: Transport {
             delegate?.onMicUpdated(mic: _selectedMic)
         }
     }
-    
+
     /// Selected mic is a value derived from the preferredAudioDevice and the set of available devices, so it may change whenever either of those change.
     private func getSelectedMic() -> PipecatClientIOS.MediaDeviceInfo? {
-        audioManager.availableDevices.first { $0.deviceID == audioManager.preferredAudioDeviceIfAvailable?.deviceID }?.toRtvi()
+        audioManager.availableDevices.first { $0.deviceID == audioManager.preferredAudioDeviceIfAvailable?.deviceID }?
+            .toRtvi()
     }
 }
 
 // MARK: - SmallWebRTCConnectionDelegate
 
 extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
-    
+
     func onConnectionStateChanged(state: RTCIceConnectionState) {
-        if ( state == .failed || state == .closed ) && ( self._state != .disconnected && self._state != .disconnecting ){
+        if (state == .failed || state == .closed) && (self._state != .disconnected && self._state != .disconnecting) {
             Task {
                 try await self.disconnect()
             }
         }
     }
-    
+
     func onMsgReceived(msg: PipecatClientIOS.Value) {
         Task {
             let dict = msg.asObject
-            if (dict["type"] != nil && dict["type"]!!.asString == SIGNALLING_TYPE) {
-                if let message = SignallingMessage(rawValue: dict["message"]!!.asString) {
+            if dict["type"] != nil && dict["type"]!!.asString == SIGNALLING_TYPE {
+                let jsonData = Data(dict["message"]!!.asString.utf8)
+                if let message = try? JSONDecoder().decode(InboundSignallingMessage.self, from: jsonData) {
                     await self.handleSignallingMessage(message)
                 }
             } else {
@@ -343,37 +404,41 @@ extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
             }
         }
     }
-    
+
     func onTracksUpdated() {
-        self.delegate?.onTracksUpdated(tracks: self.tracks()!)
+        self.handleTracksUpdated()
     }
-    
+
     private func handleMessage(_ msg: Value) {
         let dict = msg.asObject
         if let typeValue = dict["label"] {
             if typeValue?.asString == "rtvi-ai" {
                 Logger.shared.debug("Received RTVI message: \(msg)")
-                self.onMessage?(.init(
-                    type: dict["type"]??.asString,
-                    data: dict["data"]??.asString,
-                    id: dict["id"]??.asString
-                ))
+                self.onMessage?(
+                    .init(
+                        type: dict["type"]??.asString,
+                        data: dict["data"]??.asString,
+                        id: dict["id"]??.asString
+                    )
+                )
             }
         }
     }
-    
-    private func handleSignallingMessage(_ msg: SignallingMessage) async {
+
+    private func handleSignallingMessage(_ msg: InboundSignallingMessage) async {
         Logger.shared.info("Handling signalling message: \(msg)")
         do {
             switch msg {
             case .renegotiate:
                 try await self.negotiate()
+            case .peerLeft:
+                try await self.disconnect()
             }
         } catch {
             Logger.shared.error("Error while handling signalling message: \(error.localizedDescription)")
         }
     }
-    
+
 }
 
 // MARK: - AudioManagerDelegate
@@ -382,11 +447,11 @@ extension SmallWebRTCTransport: AudioManagerDelegate {
     func audioManagerDidChangeAvailableDevices(_ audioManager: AudioManager) {
         // Report available mics changed
         delegate?.onAvailableMicsUpdated(mics: getAllMics())
-        
+
         // Refresh what we should report as the selected mic
         refreshSelectedMicIfNeeded()
     }
-    
+
     func audioManagerDidChangeAudioDevice(_ audioManager: AudioManager) {
         // nothing to do here
     }
