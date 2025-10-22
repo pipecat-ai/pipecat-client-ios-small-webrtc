@@ -6,6 +6,7 @@ protocol SmallWebRTCConnectionDelegate: AnyObject {
     func onConnectionStateChanged(state: RTCIceConnectionState)
     func onMsgReceived(msg: Value)
     func onTracksUpdated()
+    func onNewIceCandidate(iceCandidate: RTCIceCandidate)
 }
 
 public enum SmallWebRTCTransceiverIndex: Int {
@@ -41,6 +42,7 @@ final class SmallWebRTCConnection: NSObject {
     private var remoteVideoTrack: RTCVideoTrack?
 
     private var iceGatheringCompleted = false
+    private var waitForIceGathering = false
 
     private var enableCam: Bool
     private var enableMic: Bool
@@ -50,20 +52,18 @@ final class SmallWebRTCConnection: NSObject {
         fatalError("SmallWebRTCConnection:init is unavailable")
     }
 
-    required init(iceServers: [String], enableCam: Bool, enableMic: Bool) {
+    required init(iceConfig: IceConfig?, enableCam: Bool, enableMic: Bool, waitForIceGathering: Bool=false) {
         self.enableCam = enableCam
         self.enableMic = enableMic
+        self.waitForIceGathering = waitForIceGathering
 
         let config = RTCConfiguration()
-        if !iceServers.isEmpty {
-            config.iceServers = [RTCIceServer(urlStrings: iceServers)]
+        if iceConfig != nil && !iceConfig!.rtcIceServers.isEmpty {
+            config.iceServers = iceConfig!.rtcIceServers
         }
 
         // Unified plan is more superior than planB
         config.sdpSemantics = .unifiedPlan
-
-        // gatherContinually will let WebRTC to listen to any network changes and send any new candidates to the other client
-        config.continualGatheringPolicy = .gatherOnce
 
         // Define media constraints. DtlsSrtpKeyAgreement is required to be true to be able to connect with web browsers.
         let constraints = RTCMediaConstraints(
@@ -106,31 +106,46 @@ final class SmallWebRTCConnection: NSObject {
                     Logger.shared.debug("Error setting local description: \(error)")
                     return
                 }
-
-                // Now ICE gathering will start, we need to wait for it to complete
-                self.waitForIceGathering(completion: {
+                
+                func createOfferAndComplete() {
                     // Manipulating so we can choose the codec
                     var offer = SmallWebRTCSessionDescription.init(from: self.peerConnection.localDescription!)
                     // It seems aiortc it is working a lot better when receiving VP8 from iOS
                     offer.sdp = self.filterCodec(kind: "video", codec: "VP8", in: offer.sdp)
                     completion(offer.rtcSessionDescription)
-                })
+                }
+
+                if self.waitForIceGathering {
+                    self.waitForIceCandidates { _ in
+                        createOfferAndComplete()
+                    }
+                } else {
+                    createOfferAndComplete()
+                }
             }
         }
     }
-
-    private func waitForIceGathering(completion: @escaping () -> Void) {
-        // Wait until ICE gathering is complete
+    
+    private func waitForIceCandidates(timeout: TimeInterval = 2.0, completion: @escaping (Bool) -> Void) {
+        // Wait until ICE gathering is complete or timeout occurs
         DispatchQueue.global()
             .async {
+                let startTime = Date()
+
                 while self.peerConnection.iceGatheringState != .complete {
-                    // Sleep to avoid blocking the main thread
+                    if Date().timeIntervalSince(startTime) > timeout {
+                        // Timed out
+                        DispatchQueue.main.async {
+                            completion(false)
+                        }
+                        return
+                    }
                     Thread.sleep(forTimeInterval: 0.1)
                 }
 
-                // Once gathering is complete, proceed with the callback
+                // ICE gathering completed before timeout
                 DispatchQueue.main.async {
-                    completion()
+                    completion(true)
                 }
             }
     }
@@ -291,12 +306,12 @@ final class SmallWebRTCConnection: NSObject {
     private func createMediaSenders() {
         // Audio
         if self.enableMic {
-            self.createLocalAudioTrack()
+            self.maybeCreateLocalAudioTrack()
         }
 
         // Video
         if self.enableCam {
-            self.createLocalVideoTrack()
+            self.maybeCreateLocalVideoTrack()
         }
 
         // Data
@@ -306,7 +321,7 @@ final class SmallWebRTCConnection: NSObject {
         }
     }
 
-    private func createLocalAudioTrack() {
+    private func maybeCreateLocalAudioTrack() {
         if self.localAudioTrack != nil {
             return
         }
@@ -316,7 +331,7 @@ final class SmallWebRTCConnection: NSObject {
         self.delegate?.onTracksUpdated()
     }
 
-    private func createLocalVideoTrack() {
+    private func maybeCreateLocalVideoTrack() {
         if self.localVideoTrack != nil {
             return
         }
@@ -411,6 +426,7 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         Logger.shared.debug("peerConnection did discover new ice candidate \(candidate.sdp)")
+        self.delegate?.onNewIceCandidate(iceCandidate: candidate)
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {
@@ -437,9 +453,7 @@ extension SmallWebRTCConnection {
     }
 
     func unmuteAudio() {
-        if self.localAudioTrack == nil {
-            self.createLocalAudioTrack()
-        }
+        self.maybeCreateLocalAudioTrack()
         self.setAudioEnabled(true)
     }
 
@@ -460,9 +474,7 @@ extension SmallWebRTCConnection {
     }
 
     func showVideo() {
-        if self.localVideoTrack == nil {
-            self.createLocalVideoTrack()
-        }
+        self.maybeCreateLocalVideoTrack()
         guard self.localVideoTrack?.isEnabled == false else {
             // nothing to do here
             return
