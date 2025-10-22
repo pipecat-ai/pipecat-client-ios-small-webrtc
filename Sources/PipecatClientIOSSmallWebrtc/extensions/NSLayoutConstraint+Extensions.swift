@@ -29,7 +29,7 @@ extension NSLayoutConstraint {
             view.widthAnchor.constraint(lessThanOrEqualTo: superview.widthAnchor),
             view.heightAnchor.constraint(lessThanOrEqualTo: superview.heightAnchor),
             view.widthAnchor.constraint(equalTo: superview.widthAnchor).priority(.defaultHigh),
-            view.heightAnchor.constraint(equalTo: superview.heightAnchor).priority(.defaultHigh),
+            view.heightAnchor.constraint(equalTo: superview.heightAnchor).priority(.defaultHigh)
         ]
     }
 
@@ -48,7 +48,7 @@ extension NSLayoutConstraint {
             view.widthAnchor.constraint(greaterThanOrEqualTo: superview.widthAnchor),
             view.heightAnchor.constraint(greaterThanOrEqualTo: superview.heightAnchor),
             view.widthAnchor.constraint(equalTo: superview.widthAnchor).priority(.defaultHigh),
-            view.heightAnchor.constraint(equalTo: superview.heightAnchor).priority(.defaultHigh),
+            view.heightAnchor.constraint(equalTo: superview.heightAnchor).priority(.defaultHigh)
         ]
     }
 }

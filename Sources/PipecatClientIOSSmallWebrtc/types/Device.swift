@@ -5,9 +5,9 @@ import Foundation
 public enum DeviceKind: RawRepresentable, CaseIterable, Equatable, Hashable {
     case videoInput
     case audio(PortKind)
-    
+
     public typealias RawValue = String
-    
+
     public var rawValue: RawValue {
         switch self {
         case .videoInput:
@@ -18,11 +18,11 @@ public enum DeviceKind: RawRepresentable, CaseIterable, Equatable, Hashable {
             return "audiooutput"
         }
     }
-    
+
     static public var allCases: [DeviceKind] {
         [.videoInput, .audio(.input), .audio(.output)]
     }
-    
+
     public init?(rawValue: RawValue) {
         switch rawValue {
         case "videoinput":
@@ -47,15 +47,15 @@ public enum AudioDeviceType: String, RawRepresentable {
     case speakerphone
     case wired
     case earpiece
-    
+
     public var deviceID: String {
         self.rawValue
     }
-    
+
     public init?(deviceID: String) {
         self.init(rawValue: deviceID)
     }
-    
+
     @_spi(Testing)
     public init?(sessionPort: AVAudioSession.Port) {
         switch sessionPort {
@@ -78,7 +78,7 @@ extension DeviceKind: Codable {
         var container = encoder.singleValueContainer()
         try container.encode(self.rawValue)
     }
-    
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let stringValue = try container.decode(String.self)
@@ -99,13 +99,13 @@ public struct Device: Equatable {
     /// Identifier for the represented device that is persistent across application launches.
     public let deviceID: String
     public let groupID: String
-    
+
     /// Enumerated value specifying the device kind.
     public let kind: DeviceKind
-    
+
     /// A label describing this device (e.g. "External USB Webcam").
     public let label: String
-    
+
     @_spi(Testing)
     public init(
         deviceID: String,

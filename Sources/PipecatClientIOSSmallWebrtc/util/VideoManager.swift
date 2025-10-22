@@ -1,5 +1,5 @@
 import Foundation
-@_implementationOnly import WebRTC
+import WebRTC
 
 internal class VideoManager {
 

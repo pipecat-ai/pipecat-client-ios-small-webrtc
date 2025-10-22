@@ -2,7 +2,10 @@ import WebRTC
 import PipecatClientIOS
 
 extension RTCVideoTrack {
-    func toRtvi() -> MediaTrackId {
-        return MediaTrackId(id: trackId)
+    func toRtvi() -> PipecatClientIOS.MediaStreamTrack {
+        return MediaStreamTrack(
+            id: MediaTrackId(id: trackId),
+            kind: .video
+        )
     }
 }
