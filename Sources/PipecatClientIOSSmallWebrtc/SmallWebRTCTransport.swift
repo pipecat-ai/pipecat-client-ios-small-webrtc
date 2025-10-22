@@ -5,7 +5,7 @@ import WebRTC
 
 /// An RTVI transport to connect with the SmallWebRTCTransport  backend.
 public class SmallWebRTCTransport: Transport {
-    private var iceServers: [String] = []
+    private var iceConfig: IceConfig?
     private var options: PipecatClientOptions?
     private var smallWebRTConnectionParams: SmallWebRTCTransportConnectionParams?
     private var _state: TransportState = .disconnected
@@ -23,7 +23,16 @@ public class SmallWebRTCTransport: Transport {
     private var preferredCamId: PipecatClientIOS.MediaDeviceId?
     private var _tracks: Tracks?
 
+    // Needed for trickle ice
+    private var canSendIceCandidates: Bool = false
+    private var candidateQueue: [RTCIceCandidate] = []
+    private var flushTimeout: Timer?
+    private let flushDelay: TimeInterval = 0.2  // 200ms
+    private var waitForIceGathering = false
+
     // MARK: - Public
+    /// Parameters used to start the bot
+    public var startBotParams: PipecatClientIOS.APIRequest?
 
     /// Voice client delegate (used directly by user's code)
     public weak var delegate: PipecatClientIOS.PipecatClientDelegate?
@@ -32,14 +41,13 @@ public class SmallWebRTCTransport: Transport {
     public var onMessage: ((PipecatClientIOS.RTVIMessageInbound) -> Void)?
 
     public required convenience init() {
-        self.init(iceServers: nil)
+        self.init(iceConfig: nil)
     }
 
-    public init(iceServers: [String]?) {
+    public init(iceConfig: IceConfig?, waitForIceGathering: Bool=false) {
         self.audioManager.delegate = self
-        if iceServers != nil {
-            self.iceServers = iceServers!
-        }
+        self.iceConfig = iceConfig
+        self.waitForIceGathering = waitForIceGathering
     }
 
     public func initialize(options: PipecatClientOptions) {
@@ -91,15 +99,18 @@ public class SmallWebRTCTransport: Transport {
         VideoTrackRegistry.clearRegistry()
     }
 
-    private func sendOffer(connectUrl: URL, offer: SmallWebRTCSessionDescription) async throws
+    private func sendOffer(offerBotParams: APIRequest, offer: SmallWebRTCSessionDescription) async throws
         -> SmallWebRTCSessionDescription {
-        Logger.shared.debug("connectUrl, \(connectUrl)")
-
-        var request = URLRequest(url: connectUrl)
+        var request = URLRequest(url: offerBotParams.endpoint)
         request.httpMethod = "POST"
-
-        // headers
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // Adding the custom headers if they have been provided
+        for header in offerBotParams.headers {
+            for (key, value) in header {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+        }
 
         do {
             request.httpBody = try JSONEncoder().encode(offer)
@@ -138,13 +149,13 @@ public class SmallWebRTCTransport: Transport {
         }
         do {
             let sdp = try await webrtcClient.offer()
-
-            let connectUrl = smallWebRTConnectionParams.webrtcRequestParams.endpoint
-
             var offer = SmallWebRTCSessionDescription(from: sdp)
             offer.pc_id = self.pc_id
 
-            let answer = try await self.sendOffer(connectUrl: connectUrl, offer: offer)
+            let answer = try await self.sendOffer(
+                offerBotParams: smallWebRTConnectionParams.webrtcRequestParams,
+                offer: offer
+            )
             self.pc_id = answer.pc_id
 
             webrtcClient.set(
@@ -172,15 +183,19 @@ public class SmallWebRTCTransport: Transport {
         self.smallWebRTConnectionParams = smallWebRTConnectionParams
 
         let webrtcClient = SmallWebRTCConnection(
-            iceServers: self.iceServers,
+            iceConfig: smallWebRTConnectionParams.iceConfig ?? self.iceConfig,
             enableCam: self.options?.enableCam ?? false,
-            enableMic: self.options?.enableMic ?? true
+            enableMic: self.options?.enableMic ?? true,
+            waitForIceGathering: self.waitForIceGathering
         )
         webrtcClient.delegate = self
         webrtcClient.startOrSwitchLocalVideoCapturer(deviceID: self.preferredCamId?.id)
         self.smallWebRTCConnection = webrtcClient
 
         try await self.negotiate()
+
+        self.canSendIceCandidates = true
+        self.flushIceCandidates()
 
         // Wait for the data channel to be open before setting state to connected
         try await webrtcClient.waitForDataChannelOpen()
@@ -189,6 +204,48 @@ public class SmallWebRTCTransport: Transport {
 
         try self.sendMessage(message: RTVIMessageOutbound.clientReady())
         self.syncTrackStatus()
+    }
+
+    private func buildRequestParamsBasedOnStartBotParams(startBotParams: PipecatClientIOS.APIRequest, sessionId: String)
+        -> APIRequest {
+        let startEndpoint = startBotParams.endpoint.absoluteString
+
+        let offerUrlString = startEndpoint.replacingOccurrences(
+            of: "/start",
+            with: "/sessions/\(sessionId)/api/offer"
+        )
+
+        guard let offerUrl = URL(string: offerUrlString) else {
+            fatalError("Invalid URL: \(offerUrlString)")
+        }
+
+        return APIRequest(
+            endpoint: offerUrl,
+            headers: startBotParams.headers
+        )
+    }
+
+    public func transformStartBotResultToConnectionParams(
+        startBotParams: PipecatClientIOS.APIRequest,
+        startBotResult: StartBotResult
+    ) throws -> any PipecatClientIOS.TransportConnectionParams {
+        // It's already a TransportConnectionParams
+        if let existingParams = startBotResult as? SmallWebRTCTransportConnectionParams {
+            return existingParams
+        }
+
+        guard let startBotResult = startBotResult as? SmallWebRTCStartBotResult else {
+            throw InvalidTransportParamsError()
+        }
+
+        let offerRequestParams = self.buildRequestParamsBasedOnStartBotParams(
+            startBotParams: startBotParams,
+            sessionId: startBotResult.sessionId
+        )
+        return SmallWebRTCTransportConnectionParams.init(
+            webrtcRequestParams: offerRequestParams,
+            iceConfig: startBotResult.iceConfig
+        )
     }
 
     private func syncTrackStatus() {
@@ -321,6 +378,8 @@ public class SmallWebRTCTransport: Transport {
                 self.delegate?.onParticipantLeft(participant: connectedBotParticipant)
                 self.delegate?.onBotDisconnected(participant: connectedBotParticipant)
                 self.delegate?.onDisconnected()
+                self.candidateQueue = []
+                self.canSendIceCandidates = false
             }
         }
     }
@@ -357,8 +416,8 @@ public class SmallWebRTCTransport: Transport {
         )
     }
 
-    public func setIceServers(iceServers: [String]) {
-        self.iceServers = iceServers
+    public func setIceConfig(iceConfig: IceConfig?) {
+        self.iceConfig = iceConfig
     }
 
     // MARK: - Private
@@ -382,6 +441,80 @@ public class SmallWebRTCTransport: Transport {
 // MARK: - SmallWebRTCConnectionDelegate
 
 extension SmallWebRTCTransport: SmallWebRTCConnectionDelegate {
+
+    private func sendIceCandidate(_ iceCandidate: RTCIceCandidate) {
+        self.candidateQueue.append(iceCandidate)
+        // We are sending all the ice candidates each 200ms
+        if self.flushTimeout == nil {
+            self.flushTimeout = Timer.scheduledTimer(withTimeInterval: self.flushDelay, repeats: false) {
+                [weak self] _ in
+                self?.flushIceCandidates()
+            }
+        }
+    }
+
+    private func flushIceCandidates() {
+        self.flushTimeout = nil
+
+        guard let connectionParams = self.smallWebRTConnectionParams,
+            !self.candidateQueue.isEmpty,
+            self.canSendIceCandidates
+        else {
+            return
+        }
+
+        // Drain queue
+        // Copying the candidates
+        let candidates = candidateQueue
+        // Removing the previous ones
+        self.candidateQueue.removeAll()
+
+        Logger.shared.info("Will Flush ice candidate \(candidates.count)")
+
+        Task {
+            do {
+                var request = URLRequest(url: connectionParams.webrtcRequestParams.endpoint)
+                request.httpMethod = "PATCH"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+                // Adding the custom headers if they have been provided
+                for header in connectionParams.webrtcRequestParams.headers {
+                    for (key, value) in header {
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
+                }
+
+                let payload =
+                    [
+                        "pc_id": self.pc_id,
+                        "candidates": candidates.map { candidate in
+                            [
+                                "candidate": candidate.sdp,
+                                "sdp_mid": candidate.sdpMid,
+                                "sdp_mline_index": candidate.sdpMLineIndex
+                            ]
+                        }
+                    ] as [String: Any]
+
+                request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse,
+                    httpResponse.statusCode >= 200 && httpResponse.statusCode <= 299
+                else {
+                    throw HttpError(message: "Failed to send ICE candidates")
+                }
+
+            } catch {
+                Logger.shared.error("Failed to send ICE candidate: \(error)")
+            }
+        }
+    }
+
+    func onNewIceCandidate(iceCandidate: RTCIceCandidate) {
+        self.sendIceCandidate(iceCandidate)
+    }
 
     func onConnectionStateChanged(state: RTCIceConnectionState) {
         if (state == .failed || state == .closed) && (self._state != .disconnected && self._state != .disconnecting) {
