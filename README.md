@@ -8,7 +8,7 @@ It handles audio/video device management, WebRTC connections, and real-time comm
 To depend on the client package, you can add this package via Xcode's package manager using the URL of this git repository directly, or you can declare your dependency in your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/pipecat-ai/pipecat-client-ios-small-webrtc.git", from: "1.1.1"),
+.package(url: "https://github.com/pipecat-ai/pipecat-client-ios-small-webrtc.git", from: "1.2.0"),
 ```
 
 and add `"PipecatClientIOSSmallWebrtc"` to your application/library target, `dependencies`, e.g. like this:
