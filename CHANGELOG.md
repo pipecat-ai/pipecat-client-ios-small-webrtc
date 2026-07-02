@@ -1,3 +1,9 @@
+# 1.3.0 — 2026-07-02
+
+### Changed
+
+- Updated the `PipecatClientIOS` dependency to [1.3.0](https://github.com/pipecat-ai/pipecat-client-ios/blob/main/CHANGELOG.md#130--2026-07-02).
+
 # 1.2.0 — 2026-01-14
 
 ### Changed
