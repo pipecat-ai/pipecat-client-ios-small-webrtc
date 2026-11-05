@@ -20,7 +20,26 @@ final class SmallWebRTCConnection: NSObject {
         RTCInitializeSSL()
         let videoEncoderFactory = RTCDefaultVideoEncoderFactory()
         let videoDecoderFactory = RTCDefaultVideoDecoderFactory()
-        return RTCPeerConnectionFactory(encoderFactory: videoEncoderFactory, decoderFactory: videoDecoderFactory)
+        // Run WebRTC's software echo canceller (AEC3) on top of the iOS
+        // Voice-Processing I/O unit, as Daily's iOS SDK does. With the
+        // built-in canceller alone, the loudspeaker reaches the mic in
+        // speakerphone mode and the bot hears itself.
+        let audioProcessingConfig = RTCAudioProcessingConfig()
+        audioProcessingConfig.isEchoCancellationEnabled = true
+        audioProcessingConfig.isNoiseSuppressionEnabled = true
+        audioProcessingConfig.isHighpassFilterEnabled = true
+        let audioProcessingModule = RTCDefaultAudioProcessingModule(
+            config: audioProcessingConfig,
+            capturePostProcessingDelegate: nil,
+            renderPreProcessingDelegate: nil
+        )
+        return RTCPeerConnectionFactory(
+            audioDeviceModuleType: .platformDefault,
+            bypassVoiceProcessing: false,
+            encoderFactory: videoEncoderFactory,
+            decoderFactory: videoDecoderFactory,
+            audioProcessingModule: audioProcessingModule
+        )
     }()
 
     weak var delegate: SmallWebRTCConnectionDelegate?
