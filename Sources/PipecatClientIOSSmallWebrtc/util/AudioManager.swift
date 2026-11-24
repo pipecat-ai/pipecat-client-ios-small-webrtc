@@ -126,13 +126,19 @@ final class AudioManager {
         )
     }
 
+    // AVAudioSession posts its notifications on a background thread, and the manager's state belongs
+    // to the main thread.
     @objc private func routeDidChange(_ notification: Notification) {
-        refreshAvailableDevices()
-        configureAudioSessionIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshAvailableDevices()
+            self?.configureAudioSessionIfNeeded()
+        }
     }
 
     @objc private func mediaServicesWereReset(_ notification: Notification) {
-        self.configureAudioSessionIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            self?.configureAudioSessionIfNeeded()
+        }
     }
 
     // MARK: - Configuration

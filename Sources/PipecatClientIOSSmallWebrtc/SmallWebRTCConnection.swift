@@ -328,7 +328,7 @@ final class SmallWebRTCConnection: NSObject {
         let audioTrack = self.createAudioTrack()
         self.getAudioTransceiver()?.sender.track = audioTrack
         self.localAudioTrack = audioTrack
-        self.delegate?.onTracksUpdated()
+        self.notifyDelegate { $0.onTracksUpdated() }
     }
 
     private func maybeCreateLocalVideoTrack() {
@@ -339,7 +339,7 @@ final class SmallWebRTCConnection: NSObject {
         self.getVideoTransceiver()?.sender.track = videoTrack
         self.localVideoTrack = videoTrack
         self.remoteVideoTrack = self.getVideoTransceiver()?.receiver.track as? RTCVideoTrack
-        self.delegate?.onTracksUpdated()
+        self.notifyDelegate { $0.onTracksUpdated() }
     }
 
     private func createAudioTrack() -> RTCAudioTrack {
@@ -385,6 +385,20 @@ final class SmallWebRTCConnection: NSObject {
     }
 }
 
+// MARK: - Delegate
+
+extension SmallWebRTCConnection {
+    /// Calls the delegate on the main thread, in the order the events happen. WebRTC reports the peer
+    /// connection's events on its own threads, and the transport's state belongs to the main thread.
+    private func notifyDelegate(_ call: @escaping (SmallWebRTCConnectionDelegate) -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            if let delegate = self?.delegate {
+                call(delegate)
+            }
+        }
+    }
+}
+
 extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
@@ -395,7 +409,7 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
         Logger.shared.debug("peerConnection did add stream")
         if !stream.audioTracks.isEmpty {
             self.remoteAudioTrack = stream.audioTracks[0]
-            self.delegate?.onTracksUpdated()
+            self.notifyDelegate { $0.onTracksUpdated() }
         }
     }
 
@@ -404,7 +418,7 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
         if !stream.audioTracks.isEmpty && self.remoteAudioTrack != nil
             && self.remoteAudioTrack?.trackId == stream.audioTracks[0].trackId {
             self.remoteAudioTrack = nil
-            self.delegate?.onTracksUpdated()
+            self.notifyDelegate { $0.onTracksUpdated() }
         }
     }
 
@@ -414,7 +428,7 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         Logger.shared.debug("peerConnection new connection state: \(newState)")
-        self.delegate?.onConnectionStateChanged(state: newState)
+        self.notifyDelegate { $0.onConnectionStateChanged(state: newState) }
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {
@@ -426,7 +440,7 @@ extension SmallWebRTCConnection: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         Logger.shared.debug("peerConnection did discover new ice candidate \(candidate.sdp)")
-        self.delegate?.onNewIceCandidate(iceCandidate: candidate)
+        self.notifyDelegate { $0.onNewIceCandidate(iceCandidate: candidate) }
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {
@@ -506,7 +520,7 @@ extension SmallWebRTCConnection: RTCDataChannelDelegate {
     func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
         do {
             let receivedValue = try JSONDecoder().decode(Value.self, from: buffer.data)
-            self.delegate?.onMsgReceived(msg: receivedValue)
+            self.notifyDelegate { $0.onMsgReceived(msg: receivedValue) }
         } catch {
             Logger.shared.error("Error decoding JSON into Value: \(error.localizedDescription)")
         }
