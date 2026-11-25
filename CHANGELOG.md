@@ -1,3 +1,9 @@
+# Unreleased
+
+### Fixed
+
+- Fixed an intermittent crash while connecting: ICE candidates WebRTC found on its own thread were queued while the main thread sent the queue to the bot. The connection now reports WebRTC's events, and the audio session's route changes, on the main thread.
+
 # 1.3.0 — 2026-07-02
 
 ### Changed
